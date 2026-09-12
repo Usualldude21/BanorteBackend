@@ -26,6 +26,32 @@ const EnvSchema = z.object({
     .regex(/^[a-z0-9][a-z0-9.-]{1,100}$/, "GEMINI_MODEL contiene caracteres inválidos")
     .default("gemini-3.7-flash"),
   GEMINI_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(60_000),
+  ELEVENLABS_API_KEY: z.preprocess(
+    (value) => value === "" ? undefined : value,
+    z.string().trim().min(16).max(512).optional(),
+  ),
+  ELEVENLABS_STT_MODEL: z.literal("scribe_v2_realtime").default("scribe_v2_realtime"),
+  ELEVENLABS_STT_LANGUAGE: z.string()
+    .regex(/^[a-z]{2,3}$/, "ELEVENLABS_STT_LANGUAGE debe ser un código ISO-639")
+    .default("es"),
+  ELEVENLABS_STT_COMMIT_STRATEGY: z.enum(["manual", "vad"]).default("vad"),
+  ELEVENLABS_STT_VAD_SILENCE_SECONDS: z.coerce.number().min(0.3).max(3).default(1),
+  ELEVENLABS_STT_VAD_THRESHOLD: z.coerce.number().min(0.1).max(0.9).default(0.4),
+  ELEVENLABS_STT_MIN_SPEECH_MS: z.coerce.number().int().min(50).max(2_000).default(100),
+  ELEVENLABS_STT_MIN_SILENCE_MS: z.coerce.number().int().min(50).max(2_000).default(100),
+  ELEVENLABS_STT_INCLUDE_TIMESTAMPS: z.enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  ELEVENLABS_STT_ECHO_CANCELLATION: z.enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  ELEVENLABS_STT_NOISE_SUPPRESSION: z.enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  ELEVENLABS_STT_AUTO_GAIN_CONTROL: z.enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  ELEVENLABS_STT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(10_000),
   AGENT_MAX_TOOL_CALLS: z.coerce.number().int().min(1).max(20).default(6),
   AGENT_TOOL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(30_000).default(12_000),
   AGENT_TOOL_MAX_RETRIES: z.coerce.number().int().min(0).max(2).default(1),

@@ -10,9 +10,11 @@
   "scripts": {
     "contracts:build": "pnpm --filter @banorte/contracts build",
     "build": "pnpm contracts:build && tsc",
-    "typecheck": "pnpm --filter @banorte/contracts typecheck && tsc --noEmit",
+    "typecheck": "pnpm contracts:build && tsc --noEmit",
     "security:audit": "pnpm audit --prod --audit-level moderate",
     "test:i4": "pnpm contracts:build && node --import tsx --test tests/financial-scope-policy.test.ts tests/i4-agent-text-integration.test.ts",
+    "test:transcription": "pnpm contracts:build && node --import tsx --test tests/realtime-transcription.test.ts",
+    "voice:test": "node --env-file=.env --import tsx src/transcription/realtime-voice-test.ts",
     "test:challenge": "node --import tsx --test tests/challenge-e2e.test.ts",
     "dev": "node --env-file=.env --import tsx src/index.ts",
     "dev:watch": "tsx watch --env-file=.env src/index.ts",

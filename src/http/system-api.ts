@@ -25,11 +25,17 @@ import { RateLimitError } from "../application/errors/rate-limit.error.js";
 import { applyHttpSecurity, setSecurityHeaders } from "./http-security.js";
 import { readSessionUiSnapshot } from "../integration/session-ui-snapshot.js";
 import { z } from "zod";
+import {
+  createRealtimeTranscriptionSessionService,
+  type RealtimeTranscriptionSessionService,
+} from "../application/create-realtime-transcription-session.js";
+import { ElevenLabsRealtimeTranscriptionGateway } from "../infrastructure/elevenlabs/elevenlabs-realtime-transcription.js";
 
 const STATUS_PATH = "/api/system/status";
 const FINANCIAL_SUMMARY_PATH = "/api/integration/financial-summary";
 const AGENT_PATH = "/api/agent";
 const SNAPSHOT_PATH = "/api/agent/snapshot";
+const REALTIME_TRANSCRIPTION_SESSION_PATH = "/api/transcription/realtime-session";
 const MAX_REQUEST_BYTES = 16_384;
 
 export interface SystemApiOptions {
@@ -37,6 +43,7 @@ export interface SystemApiOptions {
   now?: () => Date;
   financialSummary?: FinancialSummaryService;
   textAgent?: TextAgentService;
+  realtimeTranscription?: RealtimeTranscriptionSessionService;
   apiToken?: string;
   createUserSession?: (accessToken: string) => Promise<AuthenticatedSupabaseSession>;
   authenticationRateLimiter?: ToolRateLimiter;
@@ -47,6 +54,8 @@ export interface SystemApiOptions {
 export function createSystemApi(options: SystemApiOptions = {}) {
   const financialSummary = options.financialSummary ?? createFinancialSummaryService();
   const textAgent = options.textAgent ?? createTextAgentService();
+  const realtimeTranscription = options.realtimeTranscription
+    ?? createDefaultRealtimeTranscriptionService();
   const authenticationRateLimiter = options.authenticationRateLimiter ?? new ToolRateLimiter({
     maxCalls: env.AGENT_AUTH_RATE_LIMIT_PER_MINUTE,
     windowMs: 60_000,
@@ -62,6 +71,7 @@ export function createSystemApi(options: SystemApiOptions = {}) {
       options,
       financialSummary,
       textAgent,
+      realtimeTranscription,
       authenticationRateLimiter,
       requestRateLimiter,
     ).catch(() => {
@@ -77,6 +87,7 @@ async function handleRequest(
   options: SystemApiOptions,
   financialSummary: FinancialSummaryService,
   textAgent: TextAgentService,
+  realtimeTranscription: RealtimeTranscriptionSessionService,
   authenticationRateLimiter: ToolRateLimiter,
   requestRateLimiter: ToolRateLimiter,
 ): Promise<void> {
@@ -154,6 +165,24 @@ async function handleRequest(
       writeError(response, status, result.code, "Snapshot autoritativo no disponible", false); return;
     }
     writeJson(response, 200, result.snapshot);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === REALTIME_TRANSCRIPTION_SESSION_PATH) {
+    const controller = new AbortController();
+    request.once("aborted", () => controller.abort());
+    try {
+      const session = await realtimeTranscription(controller.signal);
+      writeJson(response, 200, session);
+    } catch {
+      writeError(
+        response,
+        503,
+        "transcription_unavailable",
+        "La transcripción de voz no está disponible temporalmente",
+        true,
+      );
+    }
     return;
   }
 
@@ -294,7 +323,40 @@ class InvalidJsonBodyError extends Error {}
 
 function isProtectedRoute(request: IncomingMessage): boolean {
   return request.method === "POST"
-    && (request.url === FINANCIAL_SUMMARY_PATH || request.url === AGENT_PATH || request.url === SNAPSHOT_PATH);
+    && (
+      request.url === FINANCIAL_SUMMARY_PATH
+      || request.url === AGENT_PATH
+      || request.url === SNAPSHOT_PATH
+      || request.url === REALTIME_TRANSCRIPTION_SESSION_PATH
+    );
+}
+
+function createDefaultRealtimeTranscriptionService(): RealtimeTranscriptionSessionService {
+  return createRealtimeTranscriptionSessionService({
+    gateway: new ElevenLabsRealtimeTranscriptionGateway({
+      apiKey: env.ELEVENLABS_API_KEY,
+      timeoutMs: env.ELEVENLABS_STT_TIMEOUT_MS,
+    }),
+    settings: {
+      modelId: env.ELEVENLABS_STT_MODEL,
+      languageCode: env.ELEVENLABS_STT_LANGUAGE,
+      commitStrategy: env.ELEVENLABS_STT_COMMIT_STRATEGY,
+      vadSilenceThresholdSecs: env.ELEVENLABS_STT_VAD_SILENCE_SECONDS,
+      vadThreshold: env.ELEVENLABS_STT_VAD_THRESHOLD,
+      minSpeechDurationMs: env.ELEVENLABS_STT_MIN_SPEECH_MS,
+      minSilenceDurationMs: env.ELEVENLABS_STT_MIN_SILENCE_MS,
+      includeTimestamps: env.ELEVENLABS_STT_INCLUDE_TIMESTAMPS,
+      microphone: {
+        echoCancellation: env.ELEVENLABS_STT_ECHO_CANCELLATION,
+        noiseSuppression: env.ELEVENLABS_STT_NOISE_SUPPRESSION,
+        autoGainControl: env.ELEVENLABS_STT_AUTO_GAIN_CONTROL,
+      },
+      manualAudio: {
+        audioFormat: "pcm_16000",
+        sampleRate: 16_000,
+      },
+    },
+  });
 }
 
 export async function createAuthenticatedRequestSessionFactory(

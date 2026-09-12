@@ -10,6 +10,7 @@ const ROUTE_METHODS = new Map<string, readonly string[]>([
   ["/api/system/status", ["GET"]],
   ["/api/integration/financial-summary", ["POST"]],
   ["/api/agent", ["POST"]],
+  ["/api/transcription/realtime-session", ["POST"]],
 ]);
 
 export type HttpRequestDecision =
