@@ -1,0 +1,50 @@
+{
+  "name": "moc-back",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "contracts:build": "pnpm --filter @banorte/contracts build",
+    "build": "pnpm contracts:build && tsc",
+    "typecheck": "pnpm --filter @banorte/contracts typecheck && tsc --noEmit",
+    "security:audit": "pnpm audit --prod --audit-level moderate",
+    "test:i4": "pnpm contracts:build && node --import tsx --test tests/financial-scope-policy.test.ts tests/i4-agent-text-integration.test.ts",
+    "test:challenge": "node --import tsx --test tests/challenge-e2e.test.ts",
+    "dev": "node --env-file=.env --import tsx src/index.ts",
+    "dev:watch": "tsx watch --env-file=.env src/index.ts",
+    "start": "node --env-file=.env dist/index.js",
+    "agent": "node --env-file=.env --import tsx src/agent/index.ts",
+    "agent:start": "node --env-file=.env dist/agent/index.js",
+    "agent:login": "node --env-file=.env --import tsx src/agent/login-index.ts",
+    "agent:login:start": "node --env-file=.env dist/agent/login-index.js",
+    "agent:stream": "node --env-file=.env --import tsx src/agent/stream-index.ts",
+    "agent:stream:start": "node --env-file=.env dist/agent/stream-index.js",
+    "agent:login:stream": "node --env-file=.env --import tsx src/agent/login-stream-index.ts",
+    "agent:login:stream:start": "node --env-file=.env dist/agent/login-stream-index.js",
+    "auth:jwt": "node --env-file=.env --import tsx src/agent/jwt-index.ts",
+    "auth:jwt:start": "node --env-file=.env dist/agent/jwt-index.js",
+    "api": "node --env-file=.env --import tsx src/http/api-index.ts",
+    "api:start": "node --env-file=.env dist/http/api-index.js",
+    "trace": "node --import tsx src/observability/trace-cli.ts"
+  },
+  "dependencies": {
+    "@banorte/contracts": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@supabase/server": "^1.6.0",
+    "@supabase/supabase-js": "^2.115.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

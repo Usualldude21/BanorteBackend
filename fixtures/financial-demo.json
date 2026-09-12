@@ -1,0 +1,41 @@
+{
+  "accounts": [
+    { "id": "20000000-0000-4000-8000-000000000001", "type": "checking", "status": "active", "name": "Cuenta principal", "currency": "MXN", "balance": "22500.00", "maskedIdentifier": "******4821" },
+    { "id": "20000000-0000-4000-8000-000000000002", "type": "savings", "status": "active", "name": "Ahorro", "currency": "MXN", "balance": "18000.00", "maskedIdentifier": "******1139" },
+    { "id": "20000000-0000-4000-8000-000000000003", "type": "credit_card", "status": "active", "name": "Tarjeta de crédito", "currency": "MXN", "balance": "8400.00", "maskedIdentifier": "********7712" }
+  ],
+  "financialSummary": {
+    "summaries": [{
+      "currency": "MXN",
+      "totalIncome": "30000.00",
+      "totalExpenses": "27600.00",
+      "netCashFlow": "2400.00",
+      "savingsRate": "8.00",
+      "transactionCount": 25,
+      "largestExpense": "8500.00",
+      "largestIncome": "15000.00"
+    }],
+    "metadata": { "startDate": "2026-08-01", "endDate": "2026-08-31" }
+  },
+  "paymentPending": {
+    "amount": "1500.00",
+    "currency": "MXN",
+    "fee": "0.00",
+    "estimatedBalanceAfter": "21000.00",
+    "status": "awaiting_confirmation"
+  },
+  "paymentSucceeded": {
+    "status": "succeeded",
+    "receiptNumber": "MOC-<16 HEX>",
+    "amount": "1500.00",
+    "currency": "MXN",
+    "fee": "0.00",
+    "balanceBefore": "22500.00",
+    "balanceAfter": "21000.00"
+  },
+  "errors": {
+    "insufficientFunds": { "code": "insufficient_funds", "message": "Fondos insuficientes" },
+    "sessionRequired": { "code": "authentication_required", "message": "Se requiere una sesión válida" }
+  },
+  "emptyState": { "accounts": [], "transactions": [], "categories": [] }
+}

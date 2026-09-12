@@ -1,0 +1,30 @@
+name: Data validation
+
+on:
+  pull_request:
+    paths:
+      - "supabase/**"
+      - "fixtures/**"
+      - "src/domain/account.ts"
+      - "src/domain/transaction.ts"
+  push:
+    paths:
+      - "supabase/**"
+      - "fixtures/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: supabase start
+      - run: supabase db reset
+      - name: Prove seed idempotency
+        run: psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f supabase/seed.sql
+      - name: Validate deterministic data
+        run: psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f supabase/tests/data_validation.sql
+      - name: Validate payment transaction
+        run: psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f supabase/tests/payment_flow.sql

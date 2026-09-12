@@ -1,0 +1,43 @@
+{
+  "calendar": {
+    "timezone": "UTC",
+    "historyStart": "2026-06-01",
+    "historyEnd": "2026-08-31",
+    "currentDemoPeriod": { "start": "2026-08-01", "end": "2026-08-31" }
+  },
+  "users": {
+    "happyPath": "10000000-0000-4000-8000-000000000001",
+    "rlsIsolation": "10000000-0000-4000-8000-000000000002",
+    "errorStates": "10000000-0000-4000-8000-000000000003"
+  },
+  "initialBalances": {
+    "primaryCheckingMXN": "22500.00",
+    "savingsMXN": "18000.00",
+    "creditCardMXN": "8400.00"
+  },
+  "periods": {
+    "2026-06": { "income": "30000.00", "expenses": "19200.00", "netCashFlow": "10800.00", "savingsRate": "36.00" },
+    "2026-07": { "income": "30000.00", "expenses": "20650.00", "netCashFlow": "9350.00", "savingsRate": "31.17" },
+    "2026-08": { "income": "30000.00", "expenses": "27600.00", "netCashFlow": "2400.00", "savingsRate": "8.00" }
+  },
+  "education": {
+    "threeMonthAverageIncome": "30000.00",
+    "threeMonthAverageExpenses": "22483.33",
+    "threeMonthAverageMargin": "7516.67",
+    "currentMonthMargin": "2400.00",
+    "dominantCategory": { "category": "housing", "amount": "8500.00" },
+    "adjustmentCategories": ["restaurants", "entertainment"],
+    "expectedAnomaly": { "category": "entertainment", "amount": "6000.00", "date": "2026-08-24" }
+  },
+  "recurringTransfer": {
+    "description": "Transferencia recurrente a ahorro",
+    "amount": "2000.00",
+    "occurrences": 3
+  },
+  "demoPayment": {
+    "amount": "1500.00",
+    "fee": "0.00",
+    "balanceAfter": "21000.00",
+    "receiptPattern": "^MOC-[A-F0-9]{16}$"
+  }
+}
