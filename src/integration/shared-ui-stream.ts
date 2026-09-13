@@ -9,7 +9,12 @@ import {
   type UINode,
 } from "@banorte/contracts";
 import { adaptUiDataSource } from "./shared-contract-adapter.js";
+import { adaptUiPayload } from "./shared-contract-adapter.js";
 import { type UiDataSource } from "../ui/dsl/ui.schema.js";
+import { shapeFinancialDataForIntent } from "../agent/reasoning/financial-intent-data-shaper.js";
+import { createIntentAwareUiFallback } from "../ui/generation/intent-aware-ui-fallback.js";
+import { validateUiSemantics } from "../ui/generation/semantic-ui-validator.js";
+import type { FinancialExperienceScope } from "../agent/security/financial-scope-policy.js";
 
 interface ProvisionalUiPayload {
   specification: UISpecification;
@@ -66,6 +71,55 @@ export function createProvisionalUiPayload(
       data: { [adaptedSource.key]: adaptedSource.value },
     }),
   };
+}
+
+/**
+ * Builds an early, source-bound composition only when the same semantic gate
+ * used by the final planner considers it complete for the customer's request.
+ * It never fabricates data and does not replace the final generative pass.
+ */
+export function createIntentAwareEarlyUiPayload(options: {
+  query: string;
+  dataSources: UiDataSource[];
+  revision: number;
+  sourceOffset?: number;
+  currentDate: string;
+  experienceScope: FinancialExperienceScope;
+}): ProvisionalUiPayload | null {
+  if (!hasMinimumEvidenceForEarlyUi(options.query, options.dataSources)) return null;
+  const shapedSources = shapeFinancialDataForIntent({
+    query: options.query,
+    currentDate: options.currentDate,
+    dataSources: options.dataSources,
+    experienceScope: options.experienceScope,
+  });
+  const document = createIntentAwareUiFallback(
+    options.query,
+    shapedSources,
+    options.experienceScope,
+  );
+  if (!document) return null;
+  const semanticResult = validateUiSemantics(options.query, document, shapedSources, {
+    enforcePersonalBankingComposition: options.experienceScope === "personal_banking",
+  });
+  if (!semanticResult.success) return null;
+  return adaptUiPayload(document, shapedSources, options.revision, options.sourceOffset ?? 0);
+}
+
+function hasMinimumEvidenceForEarlyUi(query: string, sources: readonly UiDataSource[]): boolean {
+  const normalized = query.normalize("NFD").replace(/[\u0300-\u036f]/gu, "").toLowerCase();
+  const has = (toolName: string) => sources.some((source) => source.toolName === toolName);
+  if (/\b(?:anomali|atipic|inusual)/u.test(normalized)) return has("detect_transaction_anomalies");
+  if (/\b(?:liquidez|flujo de efectivo)/u.test(normalized)) {
+    return has("get_cashflow") && has("get_transactions");
+  }
+  const requestsComparison = /\b(?:compara|comparacion|cambiar|cambiaron|diferencia|variacion|vario|aumento|disminu|ahorr[ea].*menos)\b/u.test(normalized);
+  const requestsMovements = /\b(?:movimientos?|transacciones?|compras?|detalle|sustent|explican)\b/u.test(normalized);
+  if (requestsMovements && !has("get_transactions")) return false;
+  const summaryCount = sources.filter((source) => source.toolName === "get_financial_summary").length;
+  if (requestsComparison && !requestsMovements && !has("compare_periods") && summaryCount < 2) return false;
+  if (/\b(?:cuentas?|saldos?|disponible)\b/u.test(normalized) && !has("get_accounts")) return false;
+  return true;
 }
 
 export function createSharedUiPatch(
@@ -143,6 +197,23 @@ export function createSharedUiPatches(current: UISpecification, next: UISpecific
       const retainedOld = oldIds.filter((id) => newIds.includes(id));
       const retainedNew = newIds.filter((id) => oldIds.includes(id));
       const additions = newChildren.filter((child) => !oldIds.includes(child.id));
+      const pureReorder = oldIds.length === newIds.length
+        && oldIds.every(Boolean) && newIds.every(Boolean)
+        && oldIds.every((id) => newIds.includes(id))
+        && equal(oldProperties, newProperties)
+        && oldChildren.every((child) => equal(child, newChildren.find((candidate) => candidate.id === child.id)));
+      if (pureReorder) {
+        const order = [...oldIds];
+        for (let index = 0; index < newIds.length; index += 1) {
+          const desired = newIds[index];
+          if (order[index] === desired || !desired) continue;
+          const previousIndex = order.indexOf(desired);
+          order.splice(previousIndex, 1);
+          order.splice(index, 0, desired);
+          emit({ op: "move", target: desired, parent: before.id, index });
+        }
+        return;
+      }
       // Contract add appends: never silently change the requested order.
       const appendOnly = equal([...retainedNew, ...additions.map((child) => child.id)], newIds);
       const removedProperties = Object.keys(oldProperties).some((key) => !(key in newProperties));

@@ -4,15 +4,17 @@ export type FinancialExperienceScope = "personal_banking" | "full";
 export type FinancialScopeBlockReason = "prompt-injection" | "out-of-scope" | "product-scope";
 
 export type FinancialScopeDecision =
-  | { allowed: true; category: "financial" | "greeting" | "capabilities" }
+  | { allowed: true; category: "financial" | "ui-transform" | "greeting" | "capabilities" }
   | { allowed: false; reason: FinancialScopeBlockReason };
 
-const FINANCIAL_INTENT = /\b(?:finanz(?:a|as|iero|iera)|banc(?:o|a|ario|aria)|cuenta(?:s)?|saldo(?:s)?|dinero|transacci(?:on|ones)|movimiento(?:s)?|compra(?:s)?|gast(?:o(?:s)?|e|ar|ando)|ingreso(?:s)?|ahorr[a-z]*|presupuesto|pago(?:s)?|pagar|transfer(?:ir|encia|encias)?|beneficiario(?:s)?|nomina|efectivo|flujo\s+de\s+efectivo|liquidez|prestamo(?:s)?|credito(?:s)?|deuda(?:s)?|interes(?:es)?|tasa(?:s)?|moneda(?:s)?|mxn|usd|eur|peso(?:s)?|dolar(?:es)?|categoria(?:s)?|deposito(?:s)?|retiro(?:s)?|tarjeta(?:s)?|fraude|anomalia(?:s)?|inversion(?:es)?|rendimiento(?:s)?|cash\s*flow|account(?:s)?|balance(?:s)?|transaction(?:s)?|expense(?:s)?|income|saving(?:s)?|budget|payment(?:s)?|loan(?:s)?|debt(?:s)?|interest|beneficiar(?:y|ies))\b/u;
+const FINANCIAL_INTENT = /\b(?:finanz(?:a|as|iero|iera)|banc(?:o|a|ario|aria)|cuenta(?:s)?|saldo(?:s)?|dinero|transacci(?:on|ones)|movimiento(?:s)?|compra(?:s)?|cargos?|comercios?|gast(?:o(?:s)?|e|ar|ando)|ingreso(?:s)?|ahorr[a-z]*|presupuesto|pago(?:s)?|pagar|transfer(?:ir|encia|encias)?|beneficiario(?:s)?|nomina|efectivo|flujo\s+de\s+efectivo|liquidez|prestamo(?:s)?|credito(?:s)?|deuda(?:s)?|interes(?:es)?|tasa(?:s)?|moneda(?:s)?|mxn|usd|eur|peso(?:s)?|dolar(?:es)?|categoria(?:s)?|deposito(?:s)?|retiro(?:s)?|tarjeta(?:s)?|fraude|anomalia(?:s)?|inversion(?:es)?|rendimiento(?:s)?|cash\s*flow|account(?:s)?|balance(?:s)?|transaction(?:s)?|expense(?:s)?|income|saving(?:s)?|budget|payment(?:s)?|loan(?:s)?|debt(?:s)?|interest|beneficiar(?:y|ies))\b/u;
 const FINANCIAL_PHRASE = /\b(?:cuanto\s+(?:dinero\s+)?tengo|dinero\s+disponible|salud\s+financiera|resumen\s+financiero|mes\s+(?:actual|pasado|anterior)|periodo\s+(?:actual|anterior)|compar(?:a|ar|acion)\b.{0,80}\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|mes|periodo)|restaurante(?:s)?\b.{0,80}\b(?:gaste|gasto|reducir|nivel|mes|periodo))\b/u;
 const PERSONAL_BANKING_FOLLOW_UP = /\b(?:ahora\s+(?:muestra|muestrame)|(?:solo|solamente)\s+(?:restaurantes|entretenimiento|vivienda|transporte)|cuanto\s+cambi[oó]\s+respecto(?:\s+a)?|(?:ese|esa)\s+(?:cambio|variaci[oó]n))\b/u;
-const UI_EDIT_FOLLOW_UP = /\b(?:filtra(?:r)?|cambia(?:r)?|ajusta(?:r)?|actualiza(?:r)?|edita(?:r)?)\b.{0,80}\b(?:tabla|grafica|vista|visualizacion)\b/u;
+const UI_TRANSFORM_ACTION = /\b(?:quit(?:a|ar)|elimin(?:a|ar)|ocult(?:a|ar)|suprim(?:e|ir)|retir(?:a|ar)|dej(?:a|ar|ame)|conserv(?:a|ar)|convert(?:ir|irlo|irla|irlos|irlas)|conviert(?:e|elo|ela|elos|elas)|transform(?:a|ar)|reorganiz(?:a|ar)|orden(?:a|ar)|agrup(?:a|ar)|muev(?:e|elo|ela)|mov(?:er|erlo|erla)|pon|ponlo|ponla|coloc(?:a|ar)|sub(?:e|ir)|prioriz(?:a|ar)|cambi(?:a|ar)|ajust(?:a|ar)|actualiz(?:a|ar)|edit(?:a|ar)|filtr(?:a|ar)|muestr(?:a|ame|ar)|ensen(?:a|ame|ar)|ampli(?:a|ar)|reduc(?:e|ir)|simplific(?:a|ar))\b/u;
+const UI_PRESENTATION_REFERENCE = /\b(?:grafic[a-z]*|tabl[a-z]*|tabal[a-z]*|vist[a-z]*|visualiz[a-z]*|timeline|linea\s+temporal|tarjet[a-z]*|metric[a-z]*|filtro(?:s)?|control(?:es)?|bloque(?:s)?|seccion(?:es)?|interfaz|ui|evidencia|resultado|comparacion(?:es)?|cambio(?:s)?|variacion(?:es)?|estos?\s+datos|mis\s+datos|lo\s+mismo|lo\s+anterior)\b/u;
+const UI_REPLAY_FOLLOW_UP = /\b(?:muestr(?:a|ame)|ensen(?:a|ame))\b.{0,45}\b(?:lo\s+mismo|lo\s+anterior|mis\s+datos|estos?\s+datos|de\s+nuevo|otra\s+vez)\b|\b(?:de\s+nuevo|otra\s+vez)\b.{0,45}\b(?:muestr(?:a|ame)|ensen(?:a|ame))\b/u;
 const FULL_EXPERIENCE_FOLLOW_UP = /\b(?:aport(?:ar|e|o|as|amos)|plazo)\b/u;
-const TEMPORAL_FINANCIAL_REQUEST = /\b(?:gast(?:e|é|o|os)|gasto(?:s)?|movimiento(?:s)?|transacci(?:on|ones)|compar(?:a|ar|acion)|categor[ií]a(?:s)?)\b/u;
+const TEMPORAL_FINANCIAL_REQUEST = /\b(?:gast(?:e|é|o|os)|gasto(?:s)?|cargos?|movimiento(?:s)?|transacci(?:on|ones)|compar(?:a|ar|acion)|categor[ií]a(?:s)?)\b/u;
 const EXPLICIT_PERIOD = /\b(?:hoy|ayer|semana(?:s)?|mes(?:es)?|trimestre(?:s)?|a[nñ]o(?:s)?|periodo(?:s)?|fecha(?:s)?|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|reciente(?:s)?|ultimo(?:s)?|[0-9]{4}-[0-9]{2}-[0-9]{2})\b/u;
 const GREETING = /^(?:hola|buen(?:os|as)?\s+(?:dias|tardes|noches)|hey|hello|hi|gracias|muchas\s+gracias|adios|hasta\s+luego)[!,.?\s]*$/u;
 const CAPABILITIES = /\b(?:que\s+(?:puedes|sabes)\s+hacer|como\s+(?:puedes\s+)?ayudarme|en\s+que\s+(?:puedes\s+)?ayudarme|tus\s+capacidades|quien\s+eres|ayuda\s+financiera|what\s+can\s+you\s+do|how\s+can\s+you\s+help)\b/u;
@@ -49,13 +51,17 @@ export function classifyFinancialQuery(
     || (TRANSFER_REFERENCE.test(request) && (!TRANSFER_READ_ONLY.test(request) || TRANSFER_ACTION.test(request))))) {
     return { allowed: false, reason: "product-scope" };
   }
+  if (OUT_OF_SCOPE_CONTENT.test(request) && !FINANCIAL_INTENT.test(request)) {
+    return { allowed: false, reason: "out-of-scope" };
+  }
+  const hasFinancialSessionContext = hasPriorFinancialSessionContext(normalized);
+  if (hasFinancialSessionContext && isUiTransformRequest(request)) {
+    return { allowed: true, category: "ui-transform" };
+  }
   if (
     FINANCIAL_INTENT.test(request)
     || FINANCIAL_PHRASE.test(request)
     || PERSONAL_BANKING_FOLLOW_UP.test(request)
-    || (normalized.includes("nueva solicitud del usuario:")
-      && FINANCIAL_INTENT.test(normalized.split("nueva solicitud del usuario:")[0] ?? "")
-      && UI_EDIT_FOLLOW_UP.test(request))
     || (experienceScope === "full" && FULL_EXPERIENCE_FOLLOW_UP.test(request))
   ) {
     return { allowed: true, category: "financial" };
@@ -140,4 +146,16 @@ function normalize(value: string): string {
 
 function latestUserRequest(normalizedQuery: string): string {
   return normalizedQuery.split("nueva solicitud del usuario:").at(-1)?.trim() || normalizedQuery;
+}
+
+function hasPriorFinancialSessionContext(normalizedQuery: string): boolean {
+  const marker = "nueva solicitud del usuario:";
+  const markerIndex = normalizedQuery.lastIndexOf(marker);
+  if (markerIndex < 0) return false;
+  return FINANCIAL_INTENT.test(normalizedQuery.slice(0, markerIndex));
+}
+
+function isUiTransformRequest(request: string): boolean {
+  return UI_REPLAY_FOLLOW_UP.test(request)
+    || (UI_TRANSFORM_ACTION.test(request) && UI_PRESENTATION_REFERENCE.test(request));
 }

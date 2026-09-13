@@ -2,6 +2,7 @@ import { ComparePeriodsOutputSchema } from "../../schemas/compare-periods.schema
 import { DetectAnomaliesOutputSchema } from "../../schemas/detect-anomalies.schema.js";
 import { GetTransactionsOutputSchema } from "../../schemas/get-transactions.schema.js";
 import { type UiDataSource } from "../../ui/dsl/ui.schema.js";
+import { containsUnsupportedNegativeAnomalyClaim } from "./anomaly-claim.js";
 import {
   LIQUIDITY_ANALYSIS_SOURCE,
   requiresLiquidityPrecursorAnalysis,
@@ -10,6 +11,7 @@ import {
 export type FinancialReasoningIssueCode =
   | "anomaly-evidence-required"
   | "anomaly-sample-insufficient"
+  | "merchant-identity-unavailable"
   | "comparison-evidence-required"
   | "liquidity-window-evidence-required"
   | "projection-assumptions-required"
@@ -39,7 +41,8 @@ interface FinancialReasoningInput {
 
 const ANOMALY_INTENT = /\b(?:anomal(?:ía|ia|ías|ias)|inusual(?:es)?|atípico(?:s|a|as)?|atipico(?:s|a|as)?|fuera de lo normal|debería preocuparme|deberia preocuparme|preocupante)\b/iu;
 const ANOMALY_CONCLUSION = /\b(?:(?:sin|no\s+(?:hay|hubo|se\s+(?:detectaron|identificaron|registraron)))\s+anomal(?:ía|ia|ías|ias)|anomal(?:ía|ia|ías|ias)\s+(?:detectad|identificad|registrad)[a-z]*|movimientos?\s+(?:inusual(?:es)?|atípico(?:s|a|as)?|atipico(?:s|a|as)?))\b/iu;
-const UNSUPPORTED_NEGATIVE_ANOMALY_CONCLUSION = /\b(?:sin\s+(?:anomal(?:ía|ia|ías|ias)|movimientos?\s+(?:atípicos?|atipicos?|inusuales?))|no\s+(?:(?:hay|hubo)\s+|se\s+(?:detectaron|identificaron|registraron|encontraron)\s+)(?:anomal(?:ía|ia|ías|ias)|movimientos?\s+(?:atípicos?|atipicos?|inusuales?)|importes?\s+(?:atípicos?|atipicos?|inusuales?)))\b/iu;
+const MERCHANT_INTENT = /\bcomercios?\b/iu;
+const MERCHANT_LIMITATION = /\b(?:no (?:hay|cuento con|se (?:identifican|incluyen|registran))|sin)\b.{0,100}\b(?:comercios?|establecimientos?|identidad|nombres? verificad[oa]s?)\b|\b(?:descripciones?|conceptos?)\b.{0,100}\b(?:no (?:identifican|equivalen|permiten)|sin verificar)\b/iu;
 const HISTORICAL_TRANSFER_INTENT = /\btransferencias?\b/iu;
 const TRANSFER_HISTORY_CONTEXT = /\b(?:mis|historicas?|históricas?|pasadas?|ahorro|entre mis cuentas|contarlas dos veces)\b/iu;
 const TRANSFER_EXECUTION_CONTEXT = /\b(?:prepara|programa|ejecuta|confirma|transfiere|transferir|envia|envía)\b/iu;
@@ -73,10 +76,19 @@ export function validateFinancialReasoning(
     if (source.toolName !== "detect_transaction_anomalies") return false;
     const result = DetectAnomaliesOutputSchema.safeParse(source.data);
     return result.success && result.data.metadata.eligibleGroups === 0;
-  }) && UNSUPPORTED_NEGATIVE_ANOMALY_CONCLUSION.test(input.answer)) {
+  }) && containsUnsupportedNegativeAnomalyClaim(input.answer)) {
     issues.push({
       code: "anomaly-sample-insufficient",
       message: "Con cero grupos elegibles no se puede concluir que no haya anomalías: declara muestra insuficiente e informa transacciones evaluadas, grupos elegibles y mínimo de muestra.",
+    });
+  }
+
+  if (MERCHANT_INTENT.test(input.query)
+    && input.dataSources.some((source) => source.toolName === "get_transactions")
+    && !MERCHANT_LIMITATION.test(input.answer)) {
+    issues.push({
+      code: "merchant-identity-unavailable",
+      message: "Los movimientos sólo contienen descripción o concepto, no un identificador de comercio verificado. No atribuyas ni clasifiques comercios; explica el límite y, si es útil, muestra conceptos observados.",
     });
   }
 
@@ -135,6 +147,30 @@ export function validateFinancialReasoning(
   }
 
   return issues;
+}
+
+export function groundMerchantIdentityAnswer(query: string, sources: readonly UiDataSource[], answer: string): string {
+  if (!MERCHANT_INTENT.test(query) || !sources.some((source) => source.toolName === "get_transactions")) return answer;
+  return "Los movimientos disponibles sólo registran conceptos o descripciones; no hay nombres de comercios verificados. No puedo determinar qué comercio concentra más compras ni identificar uno por monto o repetición. Puedes revisar los cargos observados en el detalle.";
+}
+
+/**
+ * La duración de los meses es un hecho derivado de los periodos consultados, no
+ * una conclusión del modelo. Añadimos la advertencia de forma determinística
+ * para no descartar un análisis respaldado sólo porque el LLM omitió redactarla.
+ */
+export function groundComparisonPeriodDisclosure(
+  sources: readonly UiDataSource[],
+  answer: string,
+): string {
+  if (!hasUnequalComparisonPeriods(sources) || PARTIAL_PERIOD_DISCLOSURE.test(answer)) {
+    return answer;
+  }
+
+  return [
+    "Nota de comparabilidad: el corte abarca meses calendario completos, pero tienen distinta duración; los importes son totales de cada periodo y no promedios diarios.",
+    answer,
+  ].join("\n\n");
 }
 
 export function createFinancialReasoningRepairPrompt(

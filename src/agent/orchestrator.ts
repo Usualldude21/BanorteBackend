@@ -12,6 +12,8 @@ import { createFinancialSystemPrompt } from "./prompts/system-prompt.js";
 import {
   createFinancialReasoningRepairPrompt,
   FinancialReasoningError,
+  groundComparisonPeriodDisclosure,
+  groundMerchantIdentityAnswer,
   validateFinancialReasoning,
 } from "./reasoning/financial-reasoning-validator.js";
 import { shapeFinancialDataForIntent } from "./reasoning/financial-intent-data-shaper.js";
@@ -224,9 +226,11 @@ export class AgentOrchestrator {
             dataSources,
             ...(this.config.experienceScope ? { experienceScope: this.config.experienceScope } : {}),
           });
+          const merchantGroundedAnswer = groundMerchantIdentityAnswer(query, uiDataSources, turn.text);
+          const groundedAnswer = groundComparisonPeriodDisclosure(uiDataSources, merchantGroundedAnswer);
           const reasoningIssues = validateFinancialReasoning({
             query,
-            answer: turn.text,
+            answer: groundedAnswer,
             toolsUsed,
             dataSources: uiDataSources,
           });
@@ -252,7 +256,7 @@ export class AgentOrchestrator {
             { component: "ui", operation: "generate" },
             () => this.uiGenerator.generate({
               query,
-              answer: turn.text,
+              answer: groundedAnswer,
               dataSources: uiDataSources,
             }, options.signal),
             (document) => ({ outputBytes: serializedSize(document) }),
@@ -267,7 +271,7 @@ export class AgentOrchestrator {
             yield publish(update);
           }
           const response = AgentResponseSchema.parse({
-            answer: turn.text,
+            answer: groundedAnswer,
             toolsUsed,
             ui,
             dataSources: uiDataSources,

@@ -5,11 +5,11 @@ import {
   type UiNode,
 } from "../dsl/ui.schema.js";
 import {
-  COMPARISON_CATEGORY_VIEW_SOURCE,
   LIQUIDITY_ANALYSIS_SOURCE,
   requiresLiquidityPrecursorAnalysis,
 } from "../../agent/reasoning/financial-intent-data-shaper.js";
 import { categoryIdentity, selectedComparisonCategories } from "../../agent/reasoning/personal-category-selection.js";
+import { containsUnsupportedNegativeAnomalyClaim } from "../../agent/reasoning/anomaly-claim.js";
 
 export interface SemanticUiIssue {
   code: string;
@@ -46,7 +46,8 @@ export function validateUiSemantics(
   dataSources: UiDataSource[],
   options: SemanticUiValidationOptions = {},
 ): SemanticUiValidationResult {
-  const requirements = extractExplicitUiRequirements(query);
+  const latestRequest = latestUiRequest(query);
+  const requirements = extractExplicitUiRequirements(latestRequest);
   const nodes = collectNodes(document.root);
   const issues: SemanticUiIssue[] = [];
   const charts = nodes.filter((node) => node.type === "chart");
@@ -54,8 +55,8 @@ export function validateUiSemantics(
   const visualizations = [...charts, ...heatmaps];
   const metrics = nodes.filter((node) => node.type === "metric");
   const tables = nodes.filter((node) => node.type === "table");
-  const latestRequest = normalizeText(query.split("Nueva solicitud del usuario:").at(-1) ?? query);
-  const wantsPaymentCapture = /\b(?:prepara|preparar|revisar)\b.{0,90}\bpago\b/u.test(latestRequest)
+  const normalizedRequest = normalizeText(latestRequest);
+  const wantsPaymentCapture = /\b(?:prepara|preparar|revisar)\b.{0,90}\bpago\b/u.test(normalizedRequest)
     && !dataSources.some((source) => source.toolName === "create_payment_intent" || source.toolName === "confirm_payment")
     && dataSources.some((source) => source.toolName === "get_accounts")
     && dataSources.some((source) => source.toolName === "get_beneficiaries");
@@ -65,7 +66,7 @@ export function validateUiSemantics(
     && node.fields.some((field) => /beneficiario|destinatario|destino/u.test(normalizeText(field.label))))) {
     issues.push({ code: "payment_capture_required", message: "El pago para revisión requiere formulario editable con origen y beneficiario; no basta un resumen textual" });
   }
-  const requestsGuidance = /(?:recomienda|recomendar|recomendaciones|ajustes razonables|por que no logro ahorrar|no puedo reducir|gastos intocables)/u.test(latestRequest);
+  const requestsGuidance = /(?:recomienda|recomendar|recomendaciones|ajustes razonables|por que no logro ahorrar|no puedo reducir|gastos intocables)/u.test(normalizedRequest);
   if (requestsGuidance && dataSources.some((source) => source.toolName === "evaluate_financial_health")
     && !nodes.some((node) => (node.type === "text" || node.type === "alert")
       && /(?:recomend|ajust|propon|podrias|intocable|insuficient|no hay datos)/u.test(normalizeText(node.text)))) {
@@ -107,13 +108,30 @@ export function validateUiSemantics(
   }
   validateExactCount("chart", visualizations, requirements.exactCharts, "chart_count_mismatch", issues);
   validateExactCount("metric", metrics, requirements.exactMetrics, "metric_count_mismatch", issues);
-  validateLiquidityEvidenceBindings(query, nodes, dataSources, issues);
+  validateLiquidityEvidenceBindings(latestRequest, nodes, dataSources, issues);
   validatePaymentConfirmation(nodes, dataSources, issues);
   validatePaymentReceipt(nodes, dataSources, issues);
-  validatePaymentCaptureBindings(latestRequest, nodes, dataSources, issues);
-  validatePaymentNarrative(latestRequest, nodes, dataSources, issues);
+  validatePaymentCaptureBindings(normalizedRequest, nodes, dataSources, issues);
+  validatePaymentNarrative(normalizedRequest, nodes, dataSources, issues);
   if (options.enforcePersonalBankingComposition) {
-    validatePersonalBankingComposition(latestRequest, nodes, dataSources, metrics, tables, visualizations, requirements, issues);
+    validatePersonalBankingGrounding(normalizedRequest, nodes, dataSources, tables, visualizations, issues);
+  }
+  if (/\bcomercios?\b/u.test(normalizedRequest)
+    && dataSources.some((source) => source.toolName === "get_transactions")) {
+    const narrative = nodes.flatMap((node) => node.type === "text" || node.type === "alert" ? [normalizeText(node.text)] : []);
+    if (!narrative.some((value) => /(?:no (?:hay|cuento con|se (?:identifican|incluyen|registran))|sin).{0,100}(?:comercios?|establecimientos?|nombres? verificados?|identidad)/u.test(value)
+      || /(?:descripcion|concepto).{0,100}(?:no (?:identifica|equivale|permite)|sin verificar)/u.test(value))) {
+      issues.push({ code: "merchant_identity_disclosure_required", message: "La UI debe explicar que las descripciones de movimientos no identifican comercios verificados" });
+    }
+    if (tables.some((table) => table.type === "table" && table.columns.some((column) =>
+      column.key === "description" && /comercio/u.test(normalizeText(column.label))))) {
+      issues.push({ code: "merchant_column_mislabelled", message: "La columna description debe llamarse Concepto o Descripción, no Comercio" });
+    }
+    const anomalyIds = new Set(dataSources.filter((source) => source.toolName === "detect_transaction_anomalies").map((source) => source.id));
+    if (nodes.some((node) => (node.type === "table" || node.type === "chart" || node.type === "heatmap")
+      && anomalyIds.has(node.data.sourceId))) {
+      issues.push({ code: "irrelevant_anomaly_evidence", message: "La pregunta por comercios no solicita una evaluación de anomalías" });
+    }
   }
 
   for (const node of [...visualizations, ...tables]) {
@@ -151,18 +169,15 @@ export function validateUiSemantics(
 }
 
 /**
- * A data-bound document can still be technically valid while feeling like a
- * generic data dump.  These checks cover only read-only personal-banking
- * answers, and intentionally leave payment/education flows untouched.
+ * Grounding checks for read-only personal banking. Layout is the planner's
+ * decision; only misleading or missing evidence is rejected here.
  */
-function validatePersonalBankingComposition(
+function validatePersonalBankingGrounding(
   request: string,
   nodes: UiNode[],
   sources: UiDataSource[],
-  metrics: UiNode[],
   tables: UiNode[],
   visualizations: UiNode[],
-  requirements: ExplicitUiRequirements,
   issues: SemanticUiIssue[],
 ): void {
   const hasPaymentFlow = sources.some((source) => source.toolName === "create_payment_intent" || source.toolName === "confirm_payment");
@@ -170,78 +185,58 @@ function validatePersonalBankingComposition(
 
   const source = (toolName: string) => sources.find((candidate) => candidate.toolName === toolName);
   const nonEmpty = (toolName: string, key: string) => readSourceRows(source(toolName)?.data, key).length > 0;
-  const hasDashboard = nodes.some((node) => node.type === "dashboard");
-
-  if (source("get_accounts") && nonEmpty("get_accounts", "accounts")
-    && /\b(?:cuentas?|saldos?)\b/u.test(request) && !/\btransferencias?\b/u.test(request)) {
-    if (hasDashboard || metrics.length < 1 || metrics.length > 2 || tables.length < 1) {
-      issues.push({
-        code: "personal_accounts_composition_required",
-        message: "Las cuentas requieren una composición breve: una o dos métricas y una tabla de saldos, sin dashboard.",
-      });
-    }
-  }
-
   if (source("compare_periods") && nonEmpty("compare_periods", "comparisons")) {
-    if (hasDashboard || metrics.length < 2 || metrics.length > 4 || (tables.length + visualizations.length) < 1) {
-      issues.push({
-        code: "personal_comparison_composition_required",
-        message: "Una comparación requiere dos a cuatro métricas y evidencia visible de las categorías, sin dashboard.",
-      });
-    }
     const comparisonSource = [...sources].reverse().find((candidate) => candidate.toolName === "compare_periods");
     const comparisons = readSourceRows(comparisonSource?.data, "comparisons");
     const firstComparison = comparisons[0];
     const categories = isRecord(firstComparison) ? readSourceRows(firstComparison, "categories") : [];
-    const categoryView = source(COMPARISON_CATEGORY_VIEW_SOURCE);
-    if (categoryView && readSourceRows(categoryView.data, "categories").length > 1
-      && !requirements.forbidCharts && !requirements.forbidTables
-      && (visualizations.length === 0 || tables.length === 0)) {
-      issues.push({
-        code: "personal_comparison_exploration_required",
-        message: "Una comparación con varias categorías requiere gráfica comparativa y tabla explorable, salvo que el usuario excluya alguna.",
-      });
-    }
     const selected = selectedComparisonCategories(request, categories.flatMap((row) =>
       isRecord(row) && typeof row.category === "string" ? [row.category] : []));
     if (selected) {
       const expected = new Set(selected);
-      const categoryCollections = [...tables, ...visualizations].flatMap((node) => {
-        if (node.type !== "table" && node.type !== "chart" && node.type !== "heatmap") return [];
+      const categoryCollections: string[][] = [];
+      const transactionCategories: string[] = [];
+      for (const node of [...tables, ...visualizations]) {
+        if (node.type !== "table" && node.type !== "chart" && node.type !== "heatmap") continue;
         const rows = resolveUiDataReference(node.data, sources);
-        if (!Array.isArray(rows)) return [];
-        const visible = (node.type === "table" ? rows.slice(0, node.maxRows) : rows)
-          .flatMap((row) => isRecord(row) && typeof row.category === "string" ? [categoryIdentity(row.category)] : []);
-        return visible.length > 0 ? [visible] : [];
-      });
-      if (categoryCollections.length === 0 || categoryCollections.some((visible) =>
+        if (!Array.isArray(rows)) continue;
+        const visibleRows = (node.type === "table" ? rows.slice(0, node.maxRows) : rows).filter(isRecord);
+        const visibleCategories = visibleRows
+          .flatMap((row) => typeof row.category === "string" ? [categoryIdentity(row.category)] : []);
+        if (visibleCategories.length === 0) continue;
+        const isTransactionDetail = visibleRows.some((row) =>
+          "transactionDate" in row || "description" in row || "transactionId" in row);
+        if (isTransactionDetail) transactionCategories.push(...visibleCategories);
+        else categoryCollections.push(visibleCategories);
+      }
+      const aggregateMismatch = categoryCollections.some((visible) =>
         visible.some((category) => !expected.has(category))
-        || [...expected].some((category) => !visible.includes(category)))) {
+        || [...expected].some((category) => !visible.includes(category)));
+      const transactionMismatch = transactionCategories.length > 0 && (
+        transactionCategories.some((category) => !expected.has(category))
+        || [...expected].some((category) => !transactionCategories.includes(category))
+      );
+      if ((categoryCollections.length === 0 && transactionCategories.length === 0)
+        || aggregateMismatch
+        || transactionMismatch) {
         issues.push({
           code: "personal_category_filter_mismatch",
-          message: "La tabla o gráfica de categorías debe mostrar exactamente las categorías solicitadas, sin otras filas ni omisiones.",
+          message: "Las categorías agregadas deben mostrar exactamente la selección solicitada; los movimientos pueden separarse en varias tablas siempre que en conjunto cubran esa selección sin categorías adicionales.",
         });
       }
-    }
-  }
-
-  if (source("get_spending_by_category") && nonEmpty("get_spending_by_category", "categories")
-    && /\b(?:categorias?|desglose|gastos? por categoria)\b/u.test(request)) {
-    if (visualizations.length < 1 || tables.length < 1) {
-      issues.push({
-        code: "personal_category_exploration_required",
-        message: "La exploración por categoría requiere una visualización y una tabla de detalle.",
-      });
     }
   }
 
   const anomalySource = source("detect_transaction_anomalies");
   const anomalyMetadata = isRecord(anomalySource?.data) && isRecord(anomalySource.data.metadata)
     ? anomalySource.data.metadata : undefined;
-  if (anomalyMetadata?.eligibleGroups === 0) {
+  const anomalyRelevant = /\b(?:anomalias?|atipic[oa]s?|inusual(?:es)?|fuera de lo habitual)\b/u.test(request)
+    || nodes.some((node) => (node.type === "table" || node.type === "chart" || node.type === "heatmap" || node.type === "metric")
+      && ("data" in node ? node.data.sourceId === anomalySource?.id : "value" in node && node.value.sourceId === anomalySource?.id));
+  if (anomalyRelevant && anomalyMetadata?.eligibleGroups === 0) {
     const visibleText = nodes.flatMap((node) => node.type === "alert" || node.type === "text" ? [normalizeText(node.text)] : []);
     if (!visibleText.some((value) => /muestra insuficiente|datos insuficientes|grupos? no evaluables?/u.test(value))
-      || visibleText.some((value) => /(?:sin anomal|no (?:hay|se detectaron|se encontraron) anomal)/u.test(value))) {
+      || visibleText.some(containsUnsupportedNegativeAnomalyClaim)) {
       issues.push({
         code: "personal_anomaly_sample_disclosure_required",
         message: "Con cero grupos elegibles, la UI debe indicar muestra insuficiente y no afirmar ausencia de anomalías.",
@@ -278,12 +273,6 @@ function validatePersonalBankingComposition(
     }
   }
 
-  if (source("get_transactions") && nonEmpty("get_transactions", "transactions") && /\b(?:movimientos?|transacciones?|compras?|detalle|explican)\b/u.test(request) && tables.length < 1) {
-    issues.push({
-      code: "personal_transactions_exploration_required",
-      message: "El detalle de movimientos requiere una tabla navegable con la evidencia observada.",
-    });
-  }
 }
 
 function readSourceRows(value: unknown, key: string): unknown[] {
@@ -457,14 +446,10 @@ function validateLiquidityEvidenceBindings(
   const source = dataSources.find((candidate) => candidate.toolName === LIQUIDITY_ANALYSIS_SOURCE);
   if (!source) return;
 
-  if (!nodes.some((node) => (
-    node.type === "heatmap"
-    && node.data.sourceId === source.id
-    && node.data.path === "timeline"
-  ))) {
+  if (!hasCollectionBinding(nodes, source.id, new Set(["timeline"]))) {
     issues.push({
-      code: "liquidity_heatmap_required",
-      message: "La interfaz debe mostrar el patrón diario mediante un heatmap enlazado al timeline derivado",
+      code: "liquidity_timeline_binding_required",
+      message: "La interfaz debe mostrar el patrón diario enlazado al timeline derivado, con la visualización que mejor responda la pregunta",
     });
   }
   if (!hasCollectionBinding(nodes, source.id, new Set(["precedingExpenses"]))) {
@@ -506,7 +491,7 @@ function hasCollectionBinding(nodes: UiNode[], sourceId: string, paths: Readonly
 }
 
 export function allowsProvisionalCollectionPreview(query: string): boolean {
-  const requirements = extractExplicitUiRequirements(query);
+  const requirements = extractExplicitUiRequirements(latestUiRequest(query));
   return !requirements.forbidTables
     && !requirements.forbidDashboard
     && !requirements.requireChart
@@ -537,8 +522,7 @@ function extractExplicitUiRequirements(query: string): ExplicitUiRequirements {
     forbidCharts: forbidCharts || onlySingleFigure,
     forbidDashboard: explicitlyForbids(normalized, "dashboard"),
     requireTable: !forbidTables && !onlySingleFigure && tableRequested,
-    requireChart: !forbidCharts && !onlySingleFigure && (explicitChart
-      || (!tableRequested && /\b(?:como han cambiado|evolucion|tendencia)\b/u.test(normalized))),
+    requireChart: !forbidCharts && !onlySingleFigure && explicitChart,
     requireDateRange: /\b(?:cambiar|modificar|elegir|ajustar) (?:el |las |un )?(?:periodo|fechas|rango)\b/u.test(normalized),
     requireInteraction: /\b(?:interactiv[ao]|interfaz para explorar)\b/u.test(normalized),
     requireSlider: /\b(?:slider|deslizador)\b/u.test(normalized) || contributionControl,
@@ -578,6 +562,12 @@ function parseCount(value: string): number | undefined {
 
 function normalizeText(value: string) {
   return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("es-MX");
+}
+
+export function latestUiRequest(query: string): string {
+  const marker = "Nueva solicitud del usuario:";
+  const index = query.lastIndexOf(marker);
+  return index < 0 ? query : query.slice(index + marker.length).trim();
 }
 
 function collectNodes(root: UiNode): UiNode[] {

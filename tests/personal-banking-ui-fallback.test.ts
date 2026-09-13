@@ -82,7 +82,7 @@ test("BP3 recupera cinco composiciones personales enlazadas a fuentes MCP", () =
     { query: "Muéstrame mis cuentas y saldos", sources: [accounts], rootId: "accounts-summary" },
     { query: "¿Por qué cambiaron mis gastos de julio a agosto de 2026?", sources: [comparison], rootId: "period-comparison" },
     { query: "Muéstrame mis gastos por categoría de agosto de 2026", sources: [categories], rootId: "spending-by-category" },
-    { query: "Muéstrame los movimientos que explican ese cambio", sources: [comparison, transactions], rootId: "transactions-explorer" },
+    { query: "Muéstrame los movimientos que explican ese cambio", sources: [comparison, transactions], rootId: "comparison-with-transactions" },
     { query: "Muéstrame anomalías de agosto de 2026", sources: [anomalies], rootId: "anomalies-review" },
   ];
 
@@ -95,7 +95,7 @@ test("BP3 recupera cinco composiciones personales enlazadas a fuentes MCP", () =
   }
 });
 
-test("BP3 devuelve cuentas útiles desde el primer fallo del planner", async () => {
+test("GEN3 usa respaldo de cuentas sólo después de agotar las reparaciones", async () => {
   let fetchCalls = 0;
   const generator = new GeminiUiGenerator({
     apiUrl: "https://generativelanguage.googleapis.com", apiKey: "test-key", model: "test-model", timeoutMs: 1_000,
@@ -106,12 +106,12 @@ test("BP3 devuelve cuentas útiles desde el primer fallo del planner", async () 
 
   const document = await generator.generate({ query: "Muéstrame mis cuentas y saldos", answer: "Tienes una cuenta disponible.", dataSources: [accounts] });
 
-  assert.equal(fetchCalls, 1);
+  assert.equal(fetchCalls, 3);
   assert.equal(document.root.id, "accounts-summary");
   assert.doesNotThrow(() => parseUiDocument(document, [accounts]));
 });
 
-test("BP3 rechaza composiciones técnicas que no expresan el propósito bancario", () => {
+test("GEN3 permite composiciones libres con datos válidos", () => {
   const bareAccounts = parseUiDocument({ version: "1.0", root: {
     id: "bare-accounts", type: "table", title: "Cuentas", data: { sourceId: accounts.id, path: "accounts" },
     columns: [{ key: "name", label: "Cuenta" }, { key: "balance", label: "Saldo" }], maxRows: 10,
@@ -124,10 +124,113 @@ test("BP3 rechaza composiciones técnicas que no expresan el propósito bancario
   const options = { enforcePersonalBankingComposition: true };
   const accountsResult = validateUiSemantics("Muéstrame mis cuentas y saldos", bareAccounts, [accounts], options);
   const comparisonResult = validateUiSemantics("¿Por qué cambiaron mis gastos de julio a agosto de 2026?", bareComparison, [comparison], options);
-  assert.equal(accountsResult.success, false);
-  assert.equal(comparisonResult.success, false);
-  if (!accountsResult.success) assert.ok(accountsResult.issues.some((issue) => issue.code === "personal_accounts_composition_required"));
-  if (!comparisonResult.success) assert.ok(comparisonResult.issues.some((issue) => issue.code === "personal_comparison_composition_required"));
+  assert.deepEqual(accountsResult, { success: true, issues: [] });
+  assert.deepEqual(comparisonResult, { success: true, issues: [] });
+});
+
+test("GEN3 aplica restricciones visuales sólo de la última solicitud", () => {
+  const table = parseUiDocument({ version: "1.0", root: {
+    id: "only-current-table", type: "table", title: "Cuentas",
+    data: { sourceId: accounts.id, path: "accounts" },
+    columns: [{ key: "name", label: "Cuenta" }, { key: "balance", label: "Saldo" }], maxRows: 10,
+  } }, [accounts]);
+  const context = "Contexto previo: el usuario pidió una gráfica y prohibió tablas. Nueva solicitud del usuario: Muéstrame ahora los saldos en una tabla.";
+  assert.deepEqual(validateUiSemantics(context, table, [accounts], { enforcePersonalBankingComposition: true }),
+    { success: true, issues: [] });
+});
+
+test("GEN3 repara una salida inválida antes de recurrir al respaldo", async () => {
+  const generated = { version: "1.0", root: {
+    id: "planner-table", type: "table", title: "Cuentas observadas",
+    data: { sourceId: accounts.id, path: "accounts" },
+    columns: [{ key: "name", label: "Cuenta" }, { key: "balance", label: "Saldo" }], maxRows: 10,
+  } };
+  let calls = 0;
+  const generator = new GeminiUiGenerator({
+    apiUrl: "https://generativelanguage.googleapis.com", apiKey: "test-key", model: "test-model", timeoutMs: 1_000,
+  }, async () => {
+    calls += 1;
+    const text = calls === 1 ? "{}" : JSON.stringify(generated);
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+  }, "personal_banking");
+  const result = await generator.generate({ query: "¿Qué cuentas tengo disponibles?", answer: "Una cuenta disponible.", dataSources: [accounts] });
+  assert.equal(calls, 2);
+  assert.equal(result.root.id, "planner-table");
+});
+
+test("GEN3 repara en sitio la divulgación de muestra insuficiente sin reemplazar la UI", async () => {
+  const source: UiDataSource = { ...anomalies, data: {
+    anomalies: [], metadata: { queriedAt: "2026-09-12T00:00:00.000Z", startDate: "2026-08-01", endDate: "2026-08-31",
+      filters: {}, evaluatedTransactions: 26, eligibleGroups: 0, method: "iqr", minSampleSize: 8 },
+  } };
+  let calls = 0;
+  const generated = { version: "1.0", root: { id: "planner-signal", type: "metric", label: "Movimientos evaluados",
+    value: { sourceId: source.id, path: "metadata.evaluatedTransactions" }, format: "number" } };
+  const generator = new GeminiUiGenerator({ apiUrl: "https://generativelanguage.googleapis.com", apiKey: "test-key",
+    model: "test-model", timeoutMs: 1_000 }, async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(generated) }] } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+  }, "personal_banking");
+  const result = await generator.generate({ query: "¿Hay movimientos inusuales en agosto?",
+    answer: "La muestra no alcanza para evaluar anomalías.", dataSources: [source] });
+  assert.equal(calls, 1);
+  assert.equal(result.root.type, "stack");
+  if (result.root.type === "stack") {
+    assert.ok(result.root.children.some((node) => node.id === "planner-signal"));
+    assert.ok(result.root.children.some((node) => node.type === "alert" && /Muestra insuficiente/u.test(node.text)));
+  }
+});
+
+test("GEN3 rechaza la contradicción exacta de la captura y conserva la vista generada al repararla", async () => {
+  const source: UiDataSource = { ...anomalies, data: {
+    anomalies: [], metadata: { queriedAt: "2026-09-12T00:00:00.000Z", startDate: "2026-08-01", endDate: "2026-08-31",
+      filters: {}, evaluatedTransactions: 26, eligibleGroups: 0, method: "iqr", minSampleSize: 8 },
+  } };
+  const generated = { version: "1.0", root: { id: "planner-patterns", type: "stack", direction: "vertical", children: [
+    { id: "correct-warning", type: "alert", severity: "info", text: "Muestra insuficiente para evaluar anomalías estadísticas." },
+    { id: "contradictory-warning", type: "alert", severity: "info", text: "No se identificaron importes inusuales. La solidez de la señal no es concluyente." },
+    { id: "evaluated-count", type: "metric", label: "Transacciones analizadas",
+      value: { sourceId: source.id, path: "metadata.evaluatedTransactions" }, format: "number" },
+  ] } };
+  const parsed = parseUiDocument(generated, [source]);
+  const request = "Al revisar mis movimientos de agosto de 2026, ¿hay algo fuera de lo habitual que merezca atención?";
+  const before = validateUiSemantics(request, parsed, [source], { enforcePersonalBankingComposition: true });
+  assert.equal(before.success, false);
+  if (!before.success) assert.ok(before.issues.some((issue) => issue.code === "personal_anomaly_sample_disclosure_required"));
+
+  let calls = 0;
+  const generator = new GeminiUiGenerator({ apiUrl: "https://generativelanguage.googleapis.com", apiKey: "test-key",
+    model: "test-model", timeoutMs: 1_000 }, async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(generated) }] } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+  }, "personal_banking");
+  const result = await generator.generate({ query: request, answer: "La muestra no alcanza para evaluar anomalías.", dataSources: [source] });
+  assert.equal(calls, 1);
+  assert.equal(result.root.id, "planner-patterns");
+  assert.equal(result.root.type, "stack");
+  if (result.root.type === "stack") {
+    assert.ok(result.root.children.some((node) => node.id === "evaluated-count"));
+    assert.ok(!result.root.children.some((node) => (node.type === "alert" || node.type === "text")
+      && /No se identificaron importes inusuales/u.test(node.text)));
+  }
+  assert.deepEqual(validateUiSemantics(request, result, [source], { enforcePersonalBankingComposition: true }),
+    { success: true, issues: [] });
+});
+
+test("GEN3 elige el respaldo por intención aunque existan fuentes adicionales", () => {
+  const sources = [anomalies, accounts, categories, comparison, transactions];
+  const cases = [
+    ["¿Dónde se concentra el gasto del mes?", "spending-by-category"],
+    ["¿Cómo evolucionaron mis gastos entre los dos meses?", "period-comparison"],
+    ["¿Qué comercios aparecen con más frecuencia?", "merchant-concepts"],
+    ["¿Hay movimientos inusuales que deba revisar?", "anomalies-review"],
+  ] as const;
+  for (const [query, expected] of cases) {
+    assert.equal(createIntentAwareUiFallback(query, sources, "personal_banking")?.root.id, expected, query);
+  }
 });
 
 test("BP3 conserva todas las categorías, ordena por impacto y filtra sólo las solicitadas", () => {
@@ -169,8 +272,7 @@ test("BP3 conserva todas las categorías, ordena por impacto y filtra sólo las 
     ...initialUi.root, children: initialUi.root.children.filter((node) => node.type !== "chart"),
   } }, allSources);
   const chartlessResult = validateUiSemantics(initialQuery, chartless, allSources, { enforcePersonalBankingComposition: true });
-  assert.equal(chartlessResult.success, false);
-  if (!chartlessResult.success) assert.ok(chartlessResult.issues.some((issue) => issue.code === "personal_comparison_exploration_required"));
+  assert.deepEqual(chartlessResult, { success: true, issues: [] });
   const initialTable = initialUi.root.children.find((node) => node.type === "table");
   assert.equal(initialTable?.type, "table");
   if (initialTable?.type === "table") assert.equal(initialTable.maxRows, 3);
@@ -208,6 +310,50 @@ test("BP3 conserva todas las categorías, ordena por impacto y filtra sólo las 
   }
   assert.deepEqual(validateUiSemantics(filterQuery, filteredUi, filteredSources, { enforcePersonalBankingComposition: true }),
     { success: true, issues: [] });
+
+  const entertainmentTransactions: UiDataSource = {
+    id: "source-entertainment", toolName: "get_transactions", data: {
+      transactions: [{ transactionDate: "2026-08-24", description: "Compra especial", category: "entertainment", amount: "6000.00", currency: "MXN" }],
+    },
+  };
+  const restaurantTransactions: UiDataSource = {
+    id: "source-restaurants", toolName: "get_transactions", data: {
+      transactions: [{ transactionDate: "2026-08-18", description: "Restaurante", category: "restaurants", amount: "750.00", currency: "MXN" }],
+    },
+  };
+  const detailSources = [...filteredSources, entertainmentTransactions, restaurantTransactions];
+  const transactionTable = (id: string, sourceId: string) => ({
+    id, type: "table" as const, title: "Movimientos individuales",
+    data: { sourceId, path: "transactions" },
+    columns: [
+      { key: "transactionDate", label: "Fecha" },
+      { key: "description", label: "Concepto" },
+      { key: "category", label: "Categoría" },
+      { key: "amount", label: "Monto" },
+    ],
+    maxRows: 10,
+  });
+  const detailUi = parseUiDocument({ version: "1.0", root: {
+    ...filteredUi.root,
+    children: [
+      ...filteredUi.root.children,
+      transactionTable("entertainment-movements", entertainmentTransactions.id),
+      transactionTable("restaurant-movements", restaurantTransactions.id),
+    ],
+  } }, detailSources);
+  assert.deepEqual(validateUiSemantics(filterQuery, detailUi, detailSources, { enforcePersonalBankingComposition: true }),
+    { success: true, issues: [] });
+
+  const incompleteDetailUi = parseUiDocument({ version: "1.0", root: {
+    ...filteredUi.root,
+    children: [...filteredUi.root.children, transactionTable("only-entertainment", entertainmentTransactions.id)],
+  } }, detailSources);
+  const incompleteDetailResult = validateUiSemantics(filterQuery, incompleteDetailUi, detailSources,
+    { enforcePersonalBankingComposition: true });
+  assert.equal(incompleteDetailResult.success, false);
+  if (!incompleteDetailResult.success) {
+    assert.ok(incompleteDetailResult.issues.some((issue) => issue.code === "personal_category_filter_mismatch"));
+  }
 
   const wrongUi = createIntentAwareUiFallback(filterQuery, [source], "personal_banking");
   assert.ok(wrongUi);

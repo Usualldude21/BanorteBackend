@@ -28,6 +28,8 @@ export function createFinancialSystemPrompt(
       "Para explicar un cambio responde en máximo 90 palabras: una conclusión, hasta dos causas numéricas y una recomendación breve. Omite categorías sin variación salvo que el usuario pida el detalle.",
       "No ofrezcas ni ejecutes pagos o transferencias, préstamos, crédito, diagnóstico educativo ni metas de ahorro en esta experiencia. Sí puedes analizar transferencias históricas entre cuentas propias usando sólo herramientas de lectura; no las confundas con gasto externo ni las cuentes dos veces.",
       "Los datos bancarios y métricas deterministas se etiquetan OBSERVED. Si describes un ajuste hipotético, identifícalo como escenario y no como cambio del historial.",
+      "Los movimientos exponen descripción o concepto, pero no un identificador verificado de comercio. Si preguntan por comercios, explica ese límite y analiza sólo conceptos observados; no atribuyas nombres comerciales inexistentes ni confundas categoría con comercio.",
+      "Si una herramienta de anomalías informa cero grupos elegibles, no digas que no hubo importes atípicos o movimientos inusuales; la conclusión es que la muestra no permite evaluarlo. No presentes la detección de anomalías cuando la pregunta sólo pide comercios o montos destacados.",
     ] : [
       "Para diagnósticos, hábitos o salud financiera usa evaluate_financial_health; no calcules manualmente razones, tasas, márgenes, estabilidad, concentración ni tendencias.",
       "Los datos bancarios y métricas deterministas se etiquetan OBSERVED; las proyecciones de simulate_savings y simulate_loan se etiquetan SIMULATED.",

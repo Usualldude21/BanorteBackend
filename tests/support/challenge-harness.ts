@@ -51,7 +51,15 @@ export class ChallengeHarness {
   readonly modelQueries: string[] = [];
   readonly service: TextAgentService;
 
-  constructor() {
+  constructor(options: { uiGenerationDelayMs?: number } = {}) {
+    const uiGenerator: UiGenerator = options.uiGenerationDelayMs
+      ? {
+        generate: async (input, signal) => {
+          await new Promise((resolve) => setTimeout(resolve, options.uiGenerationDelayMs));
+          return challengeUiGenerator.generate(input, signal);
+        },
+      }
+      : challengeUiGenerator;
     this.service = createTextAgentService({
       sessionStore: this.sessions,
       sessionFactory: async () => ({ client: {} as never, user: { id: ACTOR_ID } }),
@@ -73,7 +81,7 @@ export class ChallengeHarness {
         const orchestrator = new AgentOrchestrator(
           createChallengeModel(this.modelQueries),
           tools,
-          challengeUiGenerator,
+          uiGenerator,
           {
             maxToolCalls: 4,
             maxReasoningRepairs: 0,

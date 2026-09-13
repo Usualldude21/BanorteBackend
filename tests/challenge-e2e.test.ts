@@ -67,7 +67,7 @@ test("B10 caso 3: combina datos observados con una simulación determinista e in
   assert.ok(nodeTypes(harness.sessions.latest().specification!.root).includes("slider"));
 });
 
-test("B10 caso 4: el follow-up conserva sesión, recalcula y emite UIPatch", async () => {
+test("B10 caso 4: el follow-up conserva sesión, recalcula y publica una UI final", async () => {
   const harness = new ChallengeHarness();
   await harness.run(queryRequest(
     SAVINGS_SESSION,
@@ -88,7 +88,8 @@ test("B10 caso 4: el follow-up conserva sesión, recalcula y emite UIPatch", asy
   assert.equal(savingsCalls.length, 2);
   assert.equal(savingsCalls[0]?.arguments.periodicContribution, "6250.00");
   assert.equal(savingsCalls[1]?.arguments.periodicContribution, "7250.00");
-  assert.ok(followUp.some((event) => event.type === "ui-patch"));
+  assert.equal(followUp.filter((event) => event.type === "ui-started").length, 1);
+  assert.equal(followUp.filter((event) => event.type === "ui-patch").length, 0);
   assert.ok(harness.sessions.latest().interfaceRevision > firstState.interfaceRevision);
   assert.match(harness.modelQueries.at(-1) ?? "", /constraintsChanged/u);
 });

@@ -5,13 +5,15 @@ import {
 } from "../../agent/reasoning/financial-intent-data-shaper.js";
 import type { FinancialExperienceScope } from "../../agent/security/financial-scope-policy.js";
 import { COMPARISON_CATEGORY_VIEW_SOURCE } from "../../agent/reasoning/financial-intent-data-shaper.js";
+import { latestUiRequest } from "./semantic-ui-validator.js";
 
 export function createIntentAwareUiFallback(
   query: string,
   dataSources: readonly UiDataSource[],
   experienceScope: FinancialExperienceScope = "full",
 ): UiDocument | undefined {
-  if (requiresLiquidityPrecursorAnalysis(query)) {
+  const request = latestUiRequest(query);
+  if (requiresLiquidityPrecursorAnalysis(request)) {
     const source = dataSources.find((candidate) => candidate.toolName === LIQUIDITY_ANALYSIS_SOURCE);
     if (source) return createLiquidityFallback(source);
   }
@@ -22,12 +24,12 @@ export function createIntentAwareUiFallback(
   if (intentSource) return createPaymentIntentFallback(intentSource, dataSources);
 
   const healthSource = dataSources.find((candidate) => candidate.toolName === "evaluate_financial_health");
-  if (healthSource && requestsFinancialHealthExplanation(query)) {
+  if (healthSource && requestsFinancialHealthExplanation(request)) {
     return createFinancialHealthFallback(healthSource);
   }
 
   return experienceScope === "personal_banking"
-    ? createPersonalBankingFallback(query, dataSources)
+    ? createPersonalBankingFallback(request, dataSources)
     : undefined;
 }
 
@@ -41,11 +43,11 @@ function createPersonalBankingFallback(
   query: string,
   dataSources: readonly UiDataSource[],
 ): UiDocument | undefined {
+  const request = normalizeQuery(query);
   const anomalies = dataSources.find((source) => source.toolName === "detect_transaction_anomalies");
-  if (anomalies) return createAnomaliesFallback(anomalies);
 
   const transactionSources = [...dataSources].reverse().filter((source) => source.toolName === "get_transactions");
-  const filteredTransfers = /\btransferencias?\b/iu.test(query)
+  const filteredTransfers = /\btransferencias?\b/u.test(request)
     ? transactionSources.find((source) => isRecord(source.data) && isRecord(source.data.metadata)
       && isRecord(source.data.metadata.appliedFilters)
       && source.data.metadata.appliedFilters.transactionType === "transfer")
@@ -55,20 +57,71 @@ function createPersonalBankingFallback(
     return emptyFallback("transfers-empty", "No hay transferencias registradas en el periodo y filtros consultados. No puedo confirmar movimientos propios hacia ahorro con estos datos; las transferencias internas, cuando existen, no son gasto externo.");
   }
   const comparison = [...dataSources].reverse().find((source) => source.toolName === "compare_periods");
-  if (transactions && requestsTransactionDetail(query)) return createTransactionsFallback(transactions, comparison);
-  if (transactions && comparison) return createTransactionsFallback(transactions, comparison);
+  const categoryView = [...dataSources].reverse().find((source) => source.toolName === COMPARISON_CATEGORY_VIEW_SOURCE);
+  const categories = dataSources.find((source) => source.toolName === "get_spending_by_category");
+  const accounts = dataSources.find((source) => source.toolName === "get_accounts");
+  if (anomalies && /\b(?:inusual(?:es)?|atipic[oa]s?|anomalias?|sospechos[oa]s?)\b/u.test(request)) {
+    return createAnomaliesFallback(anomalies);
+  }
+  if (transactions && /\b(?:comercios?|establecimientos?|recurrentes?|recurrencia|frecuencia)\b/u.test(request)) {
+    return /\b(?:comercios?|establecimientos?)\b/u.test(request)
+      ? createMerchantConceptFallback(transactions)
+      : createTransactionsFallback(transactions, comparison);
+  }
+  if (comparison && /\b(?:compar\w*|cambi\w*|variacion\w*|evolucion\w*|tendencia\w*|meses|periodos|ingresos? y (?:egresos|gastos))\b/u.test(request)) {
+    return transactions && requestsTransactionDetail(request)
+      ? createComparisonWithTransactionsFallback(comparison, categoryView, transactions)
+      : createComparisonFallback(comparison, categoryView);
+  }
+  if (categories && /\b(?:categorias?|concentr|distribuc|composicion|donde.*gasto)\b/u.test(request)) {
+    return createCategoryFallback(categories);
+  }
+  if (accounts && /\b(?:cuentas?|saldos?)\b/u.test(request) && !/\btransferencias?\b/u.test(request)) {
+    return createAccountsFallback(accounts);
+  }
+  if (transactions && comparison && requestsTransactionDetail(query)) {
+    return createComparisonWithTransactionsFallback(comparison, categoryView, transactions);
+  }
+  if (transactions && requestsTransactionDetail(query)) return createTransactionsFallback(transactions);
+  if (transactions && comparison) return createComparisonWithTransactionsFallback(comparison, categoryView, transactions);
   if (comparison) return createComparisonFallback(
     comparison,
-    [...dataSources].reverse().find((source) => source.toolName === COMPARISON_CATEGORY_VIEW_SOURCE),
+    categoryView,
   );
 
-  const categories = dataSources.find((source) => source.toolName === "get_spending_by_category");
   if (categories) return createCategoryFallback(categories);
 
   if (transactions) return createTransactionsFallback(transactions);
 
-  const accounts = dataSources.find((source) => source.toolName === "get_accounts");
+  if (anomalies) return createAnomaliesFallback(anomalies);
   return accounts ? createAccountsFallback(accounts) : undefined;
+}
+
+function createComparisonWithTransactionsFallback(
+  comparison: UiDataSource,
+  categoryView: UiDataSource | undefined,
+  transactions: UiDataSource,
+): UiDocument {
+  const comparisonDocument = createComparisonFallback(comparison, categoryView);
+  const transactionDocument = createTransactionsFallback(transactions);
+  if (!("children" in comparisonDocument.root) || !("children" in transactionDocument.root)) {
+    return transactionDocument;
+  }
+  const transactionDetail = transactionDocument.root.children.find((node) => node.id === "transactions-table");
+  if (!transactionDetail) return comparisonDocument;
+  return {
+    version: "1.0",
+    root: {
+      id: "comparison-with-transactions",
+      type: "stack",
+      direction: "vertical",
+      children: [
+        ...comparisonDocument.root.children,
+        { id: "transactions-evidence-title", type: "text", variant: "subtitle", text: "Movimientos que sustentan el cambio" },
+        transactionDetail,
+      ],
+    },
+  };
 }
 
 function requestsTransactionDetail(query: string): boolean {
@@ -254,6 +307,20 @@ function createTransactionsFallback(source: UiDataSource, comparison?: UiDataSou
       ],
     },
   };
+}
+
+function createMerchantConceptFallback(source: UiDataSource): UiDocument {
+  const base = createTransactionsFallback(source);
+  if (base.root.type !== "stack") return base;
+  return { version: "1.0", root: {
+    ...base.root,
+    id: "merchant-concepts",
+    children: [
+      { id: "merchant-identity-limit", type: "alert", severity: "info",
+        text: "Los movimientos muestran conceptos o descripciones, no nombres de comercios verificados. Puedes explorar esos conceptos sin atribuirlos a un establecimiento específico." },
+      ...base.root.children,
+    ],
+  } };
 }
 
 function comparisonSummary(source: UiDataSource | undefined): UiDocument["root"][] {

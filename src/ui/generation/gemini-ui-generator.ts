@@ -11,12 +11,14 @@ import {
   UiDocumentValidationError,
   type UiDataSource,
   type UiDocument,
+  type UiNode,
 } from "../dsl/ui.schema.js";
 import { type UiGenerationInput, type UiGenerator } from "./ui-generator.js";
 import { createUiSystemPrompt } from "./ui-prompt.js";
 import { MAX_AGENT_QUERY_LENGTH } from "../../agent/schemas/agent.schema.js";
 import {
   validateUiSemantics,
+  latestUiRequest,
   type SemanticUiIssue,
 } from "./semantic-ui-validator.js";
 import { createUiRecoveryPlan } from "./ui-recovery-planner.js";
@@ -24,6 +26,7 @@ import { createIntentAwareUiFallback } from "./intent-aware-ui-fallback.js";
 import { groundPaymentFormOptions } from "./ground-payment-form-options.js";
 import { logger } from "../../config/logger.js";
 import type { FinancialExperienceScope } from "../../agent/security/financial-scope-policy.js";
+import { containsUnsupportedNegativeAnomalyClaim } from "../../agent/reasoning/anomaly-claim.js";
 
 const MAX_UI_CONTEXT_BYTES = 1_000_000;
 const MAX_UI_OUTPUT_BYTES = 512_000;
@@ -50,7 +53,7 @@ export class GeminiUiGenerator implements UiGenerator {
     signal?: AbortSignal,
   ): Promise<UiDocument> {
     const input = UiGenerationInputSchema.parse(rawInput);
-    const serializedInput = JSON.stringify(input);
+    const serializedInput = JSON.stringify({ ...input, latestUserRequest: latestUiRequest(input.query) });
     if (Buffer.byteLength(serializedInput, "utf8") > MAX_UI_CONTEXT_BYTES) {
       throw new UiGenerationError("Los datos superan el límite para generar la interfaz");
     }
@@ -78,7 +81,17 @@ export class GeminiUiGenerator implements UiGenerator {
         const semanticResult = validateUiSemantics(input.query, document, input.dataSources, {
           enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
         });
-        if (!semanticResult.success) throw new UiSemanticValidationError(semanticResult.issues);
+        if (!semanticResult.success) {
+          const repaired = repairInsufficientAnomalyDisclosure(document, input.dataSources, semanticResult.issues);
+          if (repaired) {
+            const parsedRepair = parseUiDocument(repaired, input.dataSources);
+            const repairResult = validateUiSemantics(input.query, parsedRepair, input.dataSources, {
+              enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
+            });
+            if (repairResult.success) return parsedRepair;
+          }
+          throw new UiSemanticValidationError(semanticResult.issues);
+        }
         return document;
       } catch (error) {
         if (!isInvalidGeneratedUi(error)) throw error;
@@ -93,25 +106,64 @@ export class GeminiUiGenerator implements UiGenerator {
             ? error.issues.slice(0, 8).map((issue) => issue.path.join(".")) : [],
         });
         if (error instanceof UiSemanticValidationError) semanticIssues = error.issues;
-        const fallback = createIntentAwareUiFallback(input.query, input.dataSources, this.experienceScope);
-        if (fallback) {
-          const result = validateUiSemantics(input.query, fallback, input.dataSources, {
-            enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
-          });
-          if (result.success) return fallback;
-        }
-        repairInstruction = createUiRepairInstruction(error, input.dataSources, attempt + 1);
         if (attempt === MAX_UI_GENERATION_ATTEMPTS) {
+          const fallback = createIntentAwareUiFallback(input.query, input.dataSources, this.experienceScope);
+          if (fallback) {
+            const result = validateUiSemantics(input.query, fallback, input.dataSources, {
+              enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
+            });
+            if (result.success) {
+              logger.warn("UI de respaldo usada tras agotar reparaciones", { attempts: attempt });
+              return fallback;
+            }
+          }
           if (semanticIssues) {
             throw new UiSemanticGenerationError(semanticIssues);
           }
           throw new UiGenerationError("Gemini generó una interfaz inválida");
         }
+        repairInstruction = createUiRepairInstruction(error, input.dataSources, attempt + 1);
       }
     }
 
     throw new UiGenerationError("Gemini generó una interfaz inválida");
   }
+}
+
+function repairInsufficientAnomalyDisclosure(
+  document: UiDocument,
+  sources: readonly UiDataSource[],
+  issues: readonly SemanticUiIssue[],
+): UiDocument | undefined {
+  if (issues.length !== 1 || issues[0]?.code !== "personal_anomaly_sample_disclosure_required") return undefined;
+  const source = sources.find((candidate) => candidate.toolName === "detect_transaction_anomalies");
+  const metadata = source && typeof source.data === "object" && source.data !== null && "metadata" in source.data
+    ? source.data.metadata : undefined;
+  if (!metadata || typeof metadata !== "object" || !("eligibleGroups" in metadata) || metadata.eligibleGroups !== 0) return undefined;
+  const count = "evaluatedTransactions" in metadata && typeof metadata.evaluatedTransactions === "number"
+    ? metadata.evaluatedTransactions : undefined;
+  const minimum = "minSampleSize" in metadata && typeof metadata.minSampleSize === "number"
+    ? metadata.minSampleSize : undefined;
+  const disclosure = `Muestra insuficiente para evaluar anomalías estadísticas: ${count ?? "varias"} transacciones evaluadas, cero grupos elegibles${minimum ? ` y mínimo de ${minimum} por grupo` : ""}. No es evidencia de normalidad ni de ausencia de anomalías.`;
+  let hasDisclosure = false;
+  const replaceMisleading = (node: UiNode): UiNode => {
+    if (node.type === "text" || node.type === "alert") {
+      if (containsUnsupportedNegativeAnomalyClaim(node.text)) {
+        hasDisclosure = true;
+        return { ...node, text: disclosure };
+      }
+      if (/muestra insuficiente|datos insuficientes|grupos? no evaluables?/iu.test(node.text)) hasDisclosure = true;
+    }
+    if (node.type === "tabs") return { ...node, tabs: node.tabs.map((tab) => ({ ...tab, children: tab.children.map(replaceMisleading) })) };
+    if ("children" in node) return { ...node, children: node.children.map(replaceMisleading) };
+    return node;
+  };
+  const root = replaceMisleading(document.root);
+  const notice: UiNode = { id: "anomaly-sample-insufficient-notice", type: "alert", severity: "info", text: disclosure };
+  if (hasDisclosure) return { version: "1.0", root };
+  return { version: "1.0", root: root.type === "stack"
+    ? { ...root, children: [notice, ...root.children] }
+    : { id: "anomaly-evidence-stack", type: "stack", direction: "vertical", children: [notice, root] } };
 }
 
 function createUiRepairInstruction(
@@ -124,7 +176,7 @@ function createUiRepairInstruction(
       `${issue.nodeId ? `${issue.nodeId}: ` : ""}${issue.message}`
     ).join("; ");
     return [
-      "La UI anterior cumple el schema, pero no respeta requisitos explícitos del usuario.",
+      "La UI anterior cumple el schema, pero tiene conflictos de seguridad, evidencia o requisitos explícitos del usuario.",
       `Violaciones semánticas: ${validationDetails}.`,
       createUiRecoveryPlan({ issues: error.issues, dataSources, attempt: nextAttempt }),
       "Genera nuevamente el documento completo y corrige todas las violaciones sin cambiar ni ignorar la petición del usuario.",

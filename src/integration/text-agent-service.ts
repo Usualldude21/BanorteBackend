@@ -17,17 +17,22 @@ import {
   adaptUiPayload,
   type SharedUiPayload,
 } from "./shared-contract-adapter.js";
-import { createProvisionalUiPayload, createSharedUiPatch, createSharedUiPatches } from "./shared-ui-stream.js";
+import {
+  createSharedUiPatch,
+  createSharedUiPatches,
+} from "./shared-ui-stream.js";
 import { createUiEventQuery, reconcileUiEventControl, SharedUiEventValidationError } from "./shared-ui-event.js";
 import { logger } from "../config/logger.js";
 import { createFollowUpQuery } from "./agent-session-store.js";
 import { type SessionStore } from "../application/ports/session-store.js";
 import { SupabaseSessionStore } from "../repositories/supabase-session.repository.js";
-import { allowsProvisionalCollectionPreview } from "../ui/generation/semantic-ui-validator.js";
 import { type PaymentConfirmationGrant } from "../application/ports/payment-confirmation-authorization.js";
 import { type PaymentWriteGrant } from "../application/ports/payment-write-authorization.js";
 import { paymentWritePermissionsForQuery } from "../agent/payment-write-policy.js";
 import { paymentReviewPermission } from "./payment-review-permission.js";
+import { env } from "../config/env.js";
+import { classifyFinancialQuery } from "../agent/security/financial-scope-policy.js";
+import { transformPersistedUi } from "./ui-transformation.js";
 
 interface TextAgentServiceDependencies {
   createRuntime?: (
@@ -64,6 +69,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
     });
     const startedAt = now();
 
+    const firstFeedbackAt = now();
     yield event({ type: "started" });
     if (request.provider !== "google") {
       yield event({
@@ -228,6 +234,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
     let hasPartialData = false;
     let isSessionCompleted = false;
     let firstUiAt: number | undefined;
+    let firstUsefulUiAt: number | undefined;
     let agentLatencyMs: number | undefined;
     let dataReadyAt: number | undefined;
     let mcpStartedAt: number | undefined;
@@ -305,17 +312,109 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
       }
       return patches;
     };
-    if (session.isContinuation && !isUiInteraction && currentSpecification && request.responseMode === "complete-ui") {
-      yield event({
-        type: "ui-started",
-        specification: currentSpecification,
-        dataRegistry: {
-          version: "1",
-          revision: dataRevision,
-          data: {},
-        },
-        revision: interfaceRevision,
-      });
+    if (session.isContinuation && !isUiInteraction && currentSpecification
+      && request.responseMode === "complete-ui") {
+      const scope = classifyFinancialQuery(agentQuery, env.FINANCIAL_EXPERIENCE_SCOPE);
+      let transformation: ReturnType<typeof transformPersistedUi> = null;
+      let patches: ReturnType<typeof createSharedUiPatches> = [];
+      const previousSpecification = currentSpecification;
+      const previousRevision = interfaceRevision;
+      try {
+        transformation = scope.allowed && scope.category === "ui-transform"
+          ? transformPersistedUi({
+              specification: previousSpecification,
+              dataRegistry: snapshotData,
+              prompt: request.query,
+            })
+          : null;
+        if (transformation) {
+          patches = createSharedUiPatches(previousSpecification, transformation.specification, previousRevision);
+          // Persist only a completely validated transformation. On failure the
+          // previous specification/revisions remain authoritative and no patch
+          // has been sent to the client.
+          await sessionStore.complete({
+            actorId,
+            sessionId: request.sessionId,
+            correlationId: request.correlationId,
+            interfaceRevision: previousRevision + patches.length,
+            dataRevision,
+            dataKeys: [...knownDataKeys],
+            dataRegistry: snapshotData,
+            invalidatedKeys: [...invalidatedKeys],
+            specification: transformation.specification,
+            prompt: request.query,
+            answer: transformation.answer,
+          });
+        }
+      } catch (error) {
+        logger.warn("Transformación GEN2 rechazada; se conserva la especificación anterior", {
+          correlationId: request.correlationId,
+          errorType: error instanceof Error ? error.name : "unknown",
+          errorMessage: error instanceof Error ? error.message : "Error no identificado",
+        });
+        yield event({
+          type: "error",
+          error: errorPayloadSchema.parse({
+            version: "1",
+            code: "ui_transform_invalid",
+            message: "No pude aplicar ese cambio a la interfaz; conservé la última vista válida y sus datos.",
+            recoverable: true,
+            hasPartialData: false,
+            correlationId: request.correlationId,
+          }),
+        });
+        await sessionStore.release(actorId, request.sessionId, request.correlationId);
+        return;
+      }
+      if (transformation) {
+        try {
+          yield event({
+            type: "status",
+            status: agentStatusSchema.parse({
+              version: "1",
+              stage: "generating_ui",
+              message: "Adaptando la interfaz existente",
+            }),
+          });
+          yield event({
+            type: "ui-started",
+            specification: previousSpecification,
+            dataRegistry: { version: "1", revision: dataRevision, data: {} },
+            revision: previousRevision,
+          });
+          for (const patch of patches) {
+            logUiPatch(request.correlationId, patch);
+            yield event({ type: "ui-patch", patch });
+          }
+          interfaceRevision = previousRevision + patches.length;
+          for (const delta of splitText(transformation.answer)) yield event({ type: "text-delta", delta });
+          const completedAt = now();
+          const totalGenerationMs = roundedDuration(completedAt - startedAt);
+          logger.info("Transformación GEN2 aplicada sin consulta MCP", {
+            correlationId: request.correlationId,
+            operation: transformation.operation,
+            patchCount: patches.length,
+            interfaceRevision,
+            dataRevision,
+            totalGenerationMs,
+          });
+          yield event({ type: "ui-completed", revision: interfaceRevision });
+          yield event({
+            type: "metrics",
+            agentLatencyMs: 0,
+            mcpLatencyMs: 0,
+            dataLatencyMs: 0,
+            uiPlanningLatencyMs: totalGenerationMs,
+            timeToFirstUiMs: totalGenerationMs,
+            timeToFirstUsefulUiMs: totalGenerationMs,
+            totalGenerationMs,
+          });
+          yield event({ type: "completed" });
+        } finally {
+          await sessionStore.release(actorId, request.sessionId, request.correlationId);
+        }
+        return;
+      }
     }
     try {
       runtime = await createRuntime(
@@ -361,21 +460,12 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
           const dataPatch = createDataPatchForSource(source.source);
           hasPartialData = true;
           yield event({ type: "data-patch", patch: dataPatch });
-          if (request.responseMode === "complete-ui" && !currentSpecification && allowsCollectionPreview(agentQuery)) {
-            const provisional = createProvisionalUiPayload(source.source, dataRevision, sourceOffset);
-            if (provisional) {
-              currentSpecification = provisional.specification;
-              firstUiAt = sourceCompletedAt;
-              yield event({
-                type: "ui-started",
-                specification: provisional.specification,
-                dataRegistry: provisional.dataRegistry,
-                revision: interfaceRevision,
-              });
-            }
-          }
         } else if (source.type === "ui-snapshot") {
           if (request.responseMode !== "complete-ui") continue;
+          // Keep a continuation's last valid UI visible until the planner's
+          // final specification is ready; intermediate snapshots are not a
+          // second answer to the user's new question.
+          if (session.isContinuation && !isUiInteraction) continue;
           const snapshotAt = now();
           if (uiPlanningStartedAt !== undefined) {
             uiPlanningLatencyMs += snapshotAt - uiPlanningStartedAt;
@@ -396,6 +486,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
             currentUi = source.ui;
             currentSpecification = payload.specification;
             firstUiAt = snapshotAt;
+            firstUsefulUiAt = snapshotAt;
             yield event({
               type: "ui-started",
               specification: payload.specification,
@@ -407,8 +498,13 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
               hasPartialData = true;
               yield event({ type: "data-patch", patch: dataPatch });
             }
-            const patches = createSharedUiPatches(currentSpecification, payload.specification, interfaceRevision);
+            const patches = session.isContinuation && !isUiInteraction
+              ? JSON.stringify(currentSpecification) === JSON.stringify(payload.specification)
+                ? []
+                : [createSharedUiPatch(currentSpecification, payload.specification, interfaceRevision)]
+              : createSharedUiPatches(currentSpecification, payload.specification, interfaceRevision);
             firstUiAt ??= now();
+            firstUsefulUiAt ??= now();
             currentUi = source.ui;
             currentSpecification = payload.specification;
             for (const patch of patches) {
@@ -419,6 +515,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
           }
         } else if (source.type === "ui-patch") {
           if (request.responseMode !== "complete-ui") continue;
+          if (session.isContinuation && !isUiInteraction) continue;
           if (!currentUi || !currentSpecification) continue;
           const next = applyUiPatch(currentUi, dataSources, {
             version: "1.0",
@@ -432,6 +529,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
           }
           const patches = createSharedUiPatches(currentSpecification, payload.specification, interfaceRevision);
           firstUiAt ??= now();
+          firstUsefulUiAt ??= now();
           currentUi = next.document;
           currentSpecification = payload.specification;
           for (const patch of patches) {
@@ -440,6 +538,10 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
             yield event({ type: "ui-patch", patch });
           }
         } else if (source.type === "completed") {
+          if (uiPlanningStartedAt !== undefined) {
+            uiPlanningLatencyMs += now() - uiPlanningStartedAt;
+            uiPlanningStartedAt = undefined;
+          }
           for (const completedSource of [...source.response.dataSources].sort(compareSourceIds)) {
             const completedKey = adaptUiDataSource(completedSource, sourceOffset).key;
             if (refreshedDataKeys.has(completedKey)) continue;
@@ -461,6 +563,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
             if (!currentSpecification) {
               registerInlinePayloadData(payload);
               firstUiAt = now();
+              firstUsefulUiAt = firstUiAt;
               currentSpecification = payload.specification;
               yield event({
                 type: "ui-started",
@@ -473,9 +576,23 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
                 hasPartialData = true;
                 yield event({ type: "data-patch", patch: dataPatch });
               }
-              if (JSON.stringify(currentSpecification) !== JSON.stringify(payload.specification)) {
+              if (session.isContinuation && !isUiInteraction) {
+                // A fresh data answer is an atomic view replacement, not a
+                // sequence of intermediate edits to the previous answer.
+                firstUiAt ??= now();
+                firstUsefulUiAt ??= now();
+                currentSpecification = payload.specification;
+                interfaceRevision += 1;
+                yield event({
+                  type: "ui-started",
+                  specification: payload.specification,
+                  dataRegistry: payload.dataRegistry,
+                  revision: interfaceRevision,
+                });
+              } else if (JSON.stringify(currentSpecification) !== JSON.stringify(payload.specification)) {
                 const patches = createSharedUiPatches(currentSpecification, payload.specification, interfaceRevision);
                 firstUiAt ??= now();
+                firstUsefulUiAt ??= now();
                 currentSpecification = payload.specification;
                 for (const patch of patches) {
                   interfaceRevision = patch.revision;
@@ -519,6 +636,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
             yield event({ type: "ui-completed", revision: interfaceRevision });
             const completedAt = now();
             const timeToFirstUiMs = Math.round((firstUiAt ?? completedAt) - startedAt);
+            const timeToFirstUsefulUiMs = Math.round((firstUsefulUiAt ?? completedAt) - startedAt);
             const totalGenerationMs = Math.round(completedAt - startedAt);
             logger.info("Métricas de Generative UI", {
               correlationId: request.correlationId,
@@ -526,8 +644,9 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
               mcpLatencyMs: roundedDuration(mcpLatencyMs),
               dataLatencyMs: roundedDuration((dataReadyAt ?? startedAt) - startedAt),
               uiPlanningLatencyMs: roundedDuration(uiPlanningLatencyMs),
+              timeToFirstFeedbackMs: roundedDuration(firstFeedbackAt - startedAt),
               timeToFirstUiMs,
-              timeToFirstUsefulUiMs: timeToFirstUiMs,
+              timeToFirstUsefulUiMs,
               totalGenerationMs,
             });
             yield event({
@@ -537,7 +656,7 @@ export function createTextAgentService(dependencies: TextAgentServiceDependencie
               dataLatencyMs: roundedDuration((dataReadyAt ?? startedAt) - startedAt),
               uiPlanningLatencyMs: roundedDuration(uiPlanningLatencyMs),
               timeToFirstUiMs,
-              timeToFirstUsefulUiMs: timeToFirstUiMs,
+              timeToFirstUsefulUiMs,
               totalGenerationMs,
             });
           }
@@ -662,10 +781,6 @@ function mapAgentStage(stage: "planning" | "consulting-tools" | "generating-ui" 
 
 function compareSourceIds(left: UiDataSource, right: UiDataSource): number {
   return Number(left.id.slice("source-".length)) - Number(right.id.slice("source-".length));
-}
-
-function allowsCollectionPreview(query: string): boolean {
-  return allowsProvisionalCollectionPreview(query);
 }
 
 const textOnlyDocument: UiDocument = UiDocumentSchema.parse({

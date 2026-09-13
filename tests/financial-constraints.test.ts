@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { emptyFinancialConstraints, updateFinancialConstraints } from "../src/domain/financial-constraints.js";
 import { createFollowUpQuery, type AgentSessionSnapshot } from "../src/integration/agent-session-store.js";
-import { validateFinancialReasoning } from "../src/agent/reasoning/financial-reasoning-validator.js";
+import {
+  groundComparisonPeriodDisclosure,
+  validateFinancialReasoning,
+} from "../src/agent/reasoning/financial-reasoning-validator.js";
 import { createIntentAwareUiFallback } from "../src/ui/generation/intent-aware-ui-fallback.js";
 import { validateUiSemantics } from "../src/ui/generation/semantic-ui-validator.js";
 import { parseUiDocument } from "../src/ui/dsl/ui.schema.js";
@@ -68,6 +71,36 @@ test("rechaza etiquetas de evidencia sin una conclusión legible", () => {
   assert.ok(issues.some((issue) => issue.code === "substantive-answer-required"));
 });
 
+test("conserva comparaciones válidas y agrega la advertencia de meses con distinta duración", () => {
+  const dataSources = [{
+    id: "comparison-source",
+    toolName: "compare_periods",
+    data: {
+      comparisons: [],
+      metadata: {
+        queriedAt: "2026-09-13T00:00:00.000Z",
+        previousPeriod: { startDate: "2026-06-01", endDate: "2026-06-30" },
+        currentPeriod: { startDate: "2026-07-01", endDate: "2026-07-31" },
+        currency: "MXN",
+      },
+    },
+  }];
+
+  const answer = groundComparisonPeriodDisclosure(
+    dataSources,
+    "El gasto aumentó principalmente en entretenimiento y restaurantes.",
+  );
+
+  assert.match(answer, /Nota de comparabilidad/u);
+  assert.match(answer, /distinta duración/u);
+  assert.ok(!validateFinancialReasoning({
+    query: "Compara mis gastos de junio y julio",
+    answer,
+    toolsUsed: ["compare_periods"],
+    dataSources,
+  }).some((issue) => issue.code === "partial-period-disclosure-required"));
+});
+
 test("BP3 exige evidencia aun cuando el modelo agregue una conclusión negativa de anomalías", () => {
   const issues = validateFinancialReasoning({
     query: "Compara mis gastos de julio y agosto de 2026",
@@ -92,6 +125,18 @@ test("BP2 no confunde cero grupos elegibles con ausencia de anomalías", () => {
     toolsUsed: ["detect_transaction_anomalies"], dataSources,
   });
   assert.ok(unsafe.some((issue) => issue.code === "anomaly-sample-insufficient"));
+  const qualifiedUnsafe = validateFinancialReasoning({
+    query: "¿Hay algo fuera de lo habitual en mis movimientos de agosto?",
+    answer: "No se identificaron importes estadísticamente atípicos en agosto.",
+    toolsUsed: ["detect_transaction_anomalies"], dataSources,
+  });
+  assert.ok(qualifiedUnsafe.some((issue) => issue.code === "anomaly-sample-insufficient"));
+  const screenshotUnsafe = validateFinancialReasoning({
+    query: "¿Hay algo fuera de lo habitual en mis movimientos de agosto?",
+    answer: "No se identificaron importes inusuales. La solidez de la señal no es concluyente.",
+    toolsUsed: ["detect_transaction_anomalies"], dataSources,
+  });
+  assert.ok(screenshotUnsafe.some((issue) => issue.code === "anomaly-sample-insufficient"));
 
   const safe = validateFinancialReasoning({
     query: "Busca movimientos atípicos en agosto de 2026",
@@ -112,6 +157,18 @@ test("BP2 no confunde cero grupos elegibles con ausencia de anomalías", () => {
     dataSources, { enforcePersonalBankingComposition: true });
   assert.equal(misleadingResult.success, false);
   if (!misleadingResult.success) assert.ok(misleadingResult.issues.some((issue) => issue.code === "personal_anomaly_sample_disclosure_required"));
+});
+
+test("GEN3 exige reconocer que los conceptos no son comercios verificados", () => {
+  const dataSources = [{ id: "transactions-source", toolName: "get_transactions", data: { transactions: [] } }];
+  const query = "¿En cuáles comercios hice más compras durante agosto de 2026?";
+  const unsafe = validateFinancialReasoning({ query, answer: "El comercio principal fue Restaurante.",
+    toolsUsed: ["get_transactions"], dataSources });
+  assert.ok(unsafe.some((issue) => issue.code === "merchant-identity-unavailable"));
+  const safe = validateFinancialReasoning({ query,
+    answer: "Los movimientos sólo muestran conceptos; no hay nombres de comercios verificados para atribuir las compras.",
+    toolsUsed: ["get_transactions"], dataSources });
+  assert.ok(!safe.some((issue) => issue.code === "merchant-identity-unavailable"));
 });
 
 test("BP2 exige transferencias históricas filtradas y visibles, sin habilitar pagos", () => {

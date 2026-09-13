@@ -104,7 +104,7 @@ test("un fallback de pago tiene prioridad sobre una fuente auxiliar de salud", (
   assert.equal(fallback?.root.id, "payment-receipt-card");
 });
 
-test("recupera la solicitud B3 desde el primer JSON inválido de Gemini", async () => {
+test("GEN3 recupera la solicitud B3 tras agotar tres JSON inválidos de Gemini", async () => {
   let fetchCalls = 0;
   const generator = new GeminiUiGenerator({
     apiUrl: "https://generativelanguage.googleapis.com",
@@ -139,7 +139,7 @@ test("recupera la solicitud B3 desde el primer JSON inválido de Gemini", async 
     dataSources: sources,
   });
 
-  assert.equal(fetchCalls, 1);
+  assert.equal(fetchCalls, 3);
   assert.equal(document.root.id, "financial-health-card");
   assert.doesNotThrow(() => parseUiDocument(document, sources));
 });
