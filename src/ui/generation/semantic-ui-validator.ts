@@ -5,14 +5,20 @@ import {
   type UiNode,
 } from "../dsl/ui.schema.js";
 import {
+  COMPARISON_CATEGORY_VIEW_SOURCE,
   LIQUIDITY_ANALYSIS_SOURCE,
   requiresLiquidityPrecursorAnalysis,
 } from "../../agent/reasoning/financial-intent-data-shaper.js";
+import { categoryIdentity, selectedComparisonCategories } from "../../agent/reasoning/personal-category-selection.js";
 
 export interface SemanticUiIssue {
   code: string;
   message: string;
   nodeId?: string;
+}
+
+export interface SemanticUiValidationOptions {
+  enforcePersonalBankingComposition?: boolean;
 }
 
 export type SemanticUiValidationResult =
@@ -38,6 +44,7 @@ export function validateUiSemantics(
   query: string,
   document: UiDocument,
   dataSources: UiDataSource[],
+  options: SemanticUiValidationOptions = {},
 ): SemanticUiValidationResult {
   const requirements = extractExplicitUiRequirements(query);
   const nodes = collectNodes(document.root);
@@ -105,6 +112,9 @@ export function validateUiSemantics(
   validatePaymentReceipt(nodes, dataSources, issues);
   validatePaymentCaptureBindings(latestRequest, nodes, dataSources, issues);
   validatePaymentNarrative(latestRequest, nodes, dataSources, issues);
+  if (options.enforcePersonalBankingComposition) {
+    validatePersonalBankingComposition(latestRequest, nodes, dataSources, metrics, tables, visualizations, requirements, issues);
+  }
 
   for (const node of [...visualizations, ...tables]) {
     const rows = resolveUiDataReference(node.data, dataSources);
@@ -138,6 +148,146 @@ export function validateUiSemantics(
   }
 
   return issues.length === 0 ? { success: true, issues: [] } : { success: false, issues };
+}
+
+/**
+ * A data-bound document can still be technically valid while feeling like a
+ * generic data dump.  These checks cover only read-only personal-banking
+ * answers, and intentionally leave payment/education flows untouched.
+ */
+function validatePersonalBankingComposition(
+  request: string,
+  nodes: UiNode[],
+  sources: UiDataSource[],
+  metrics: UiNode[],
+  tables: UiNode[],
+  visualizations: UiNode[],
+  requirements: ExplicitUiRequirements,
+  issues: SemanticUiIssue[],
+): void {
+  const hasPaymentFlow = sources.some((source) => source.toolName === "create_payment_intent" || source.toolName === "confirm_payment");
+  if (hasPaymentFlow) return;
+
+  const source = (toolName: string) => sources.find((candidate) => candidate.toolName === toolName);
+  const nonEmpty = (toolName: string, key: string) => readSourceRows(source(toolName)?.data, key).length > 0;
+  const hasDashboard = nodes.some((node) => node.type === "dashboard");
+
+  if (source("get_accounts") && nonEmpty("get_accounts", "accounts")
+    && /\b(?:cuentas?|saldos?)\b/u.test(request) && !/\btransferencias?\b/u.test(request)) {
+    if (hasDashboard || metrics.length < 1 || metrics.length > 2 || tables.length < 1) {
+      issues.push({
+        code: "personal_accounts_composition_required",
+        message: "Las cuentas requieren una composición breve: una o dos métricas y una tabla de saldos, sin dashboard.",
+      });
+    }
+  }
+
+  if (source("compare_periods") && nonEmpty("compare_periods", "comparisons")) {
+    if (hasDashboard || metrics.length < 2 || metrics.length > 4 || (tables.length + visualizations.length) < 1) {
+      issues.push({
+        code: "personal_comparison_composition_required",
+        message: "Una comparación requiere dos a cuatro métricas y evidencia visible de las categorías, sin dashboard.",
+      });
+    }
+    const comparisonSource = [...sources].reverse().find((candidate) => candidate.toolName === "compare_periods");
+    const comparisons = readSourceRows(comparisonSource?.data, "comparisons");
+    const firstComparison = comparisons[0];
+    const categories = isRecord(firstComparison) ? readSourceRows(firstComparison, "categories") : [];
+    const categoryView = source(COMPARISON_CATEGORY_VIEW_SOURCE);
+    if (categoryView && readSourceRows(categoryView.data, "categories").length > 1
+      && !requirements.forbidCharts && !requirements.forbidTables
+      && (visualizations.length === 0 || tables.length === 0)) {
+      issues.push({
+        code: "personal_comparison_exploration_required",
+        message: "Una comparación con varias categorías requiere gráfica comparativa y tabla explorable, salvo que el usuario excluya alguna.",
+      });
+    }
+    const selected = selectedComparisonCategories(request, categories.flatMap((row) =>
+      isRecord(row) && typeof row.category === "string" ? [row.category] : []));
+    if (selected) {
+      const expected = new Set(selected);
+      const categoryCollections = [...tables, ...visualizations].flatMap((node) => {
+        if (node.type !== "table" && node.type !== "chart" && node.type !== "heatmap") return [];
+        const rows = resolveUiDataReference(node.data, sources);
+        if (!Array.isArray(rows)) return [];
+        const visible = (node.type === "table" ? rows.slice(0, node.maxRows) : rows)
+          .flatMap((row) => isRecord(row) && typeof row.category === "string" ? [categoryIdentity(row.category)] : []);
+        return visible.length > 0 ? [visible] : [];
+      });
+      if (categoryCollections.length === 0 || categoryCollections.some((visible) =>
+        visible.some((category) => !expected.has(category))
+        || [...expected].some((category) => !visible.includes(category)))) {
+        issues.push({
+          code: "personal_category_filter_mismatch",
+          message: "La tabla o gráfica de categorías debe mostrar exactamente las categorías solicitadas, sin otras filas ni omisiones.",
+        });
+      }
+    }
+  }
+
+  if (source("get_spending_by_category") && nonEmpty("get_spending_by_category", "categories")
+    && /\b(?:categorias?|desglose|gastos? por categoria)\b/u.test(request)) {
+    if (visualizations.length < 1 || tables.length < 1) {
+      issues.push({
+        code: "personal_category_exploration_required",
+        message: "La exploración por categoría requiere una visualización y una tabla de detalle.",
+      });
+    }
+  }
+
+  const anomalySource = source("detect_transaction_anomalies");
+  const anomalyMetadata = isRecord(anomalySource?.data) && isRecord(anomalySource.data.metadata)
+    ? anomalySource.data.metadata : undefined;
+  if (anomalyMetadata?.eligibleGroups === 0) {
+    const visibleText = nodes.flatMap((node) => node.type === "alert" || node.type === "text" ? [normalizeText(node.text)] : []);
+    if (!visibleText.some((value) => /muestra insuficiente|datos insuficientes|grupos? no evaluables?/u.test(value))
+      || visibleText.some((value) => /(?:sin anomal|no (?:hay|se detectaron|se encontraron) anomal)/u.test(value))) {
+      issues.push({
+        code: "personal_anomaly_sample_disclosure_required",
+        message: "Con cero grupos elegibles, la UI debe indicar muestra insuficiente y no afirmar ausencia de anomalías.",
+      });
+    }
+  }
+
+  if (/\btransferencias?\b/u.test(request)) {
+    const filteredTransferSource = [...sources].reverse().find((candidate) => candidate.toolName === "get_transactions"
+      && isRecord(candidate.data)
+      && isRecord(candidate.data.metadata)
+      && isRecord(candidate.data.metadata.appliedFilters)
+      && candidate.data.metadata.appliedFilters.transactionType === "transfer");
+    const transferSources = sources.filter((candidate) => candidate.toolName === "get_transactions"
+      && isRecord(candidate.data)
+      && readSourceRows(candidate.data, "transactions").some((row) => isRecord(row) && row.type === "transfer"));
+    if (transferSources.length > 0 && !tables.some((table) => {
+      if (table.type !== "table") return false;
+      const rows = resolveUiDataReference(table.data, sources);
+      return Array.isArray(rows) && rows.slice(0, table.maxRows).some((row) => isRecord(row) && row.type === "transfer");
+    })) {
+      issues.push({
+        code: "personal_transfer_history_table_required",
+        message: "El análisis de transferencias históricas debe mostrar los movimientos de transferencia observados en una tabla, no sólo saldos agregados.",
+      });
+    }
+    if (filteredTransferSource && readSourceRows(filteredTransferSource.data, "transactions").length === 0
+      && (tables.length > 0 || !nodes.some((node) => (node.type === "alert" || node.type === "text")
+        && /no (?:hay|se registraron|se encontraron) transferencias|sin transferencias registradas/u.test(normalizeText(node.text))))) {
+      issues.push({
+        code: "personal_transfer_history_empty_state_required",
+        message: "Si la consulta filtrada no devuelve transferencias, muestra un estado vacío explícito; no sustituyas la evidencia con una tabla de saldos.",
+      });
+    }
+  }
+
+  if (source("get_transactions") && nonEmpty("get_transactions", "transactions") && /\b(?:movimientos?|transacciones?|compras?|detalle|explican)\b/u.test(request) && tables.length < 1) {
+    issues.push({
+      code: "personal_transactions_exploration_required",
+      message: "El detalle de movimientos requiere una tabla navegable con la evidencia observada.",
+    });
+  }
+}
+
+function readSourceRows(value: unknown, key: string): unknown[] {
+  return isRecord(value) && Array.isArray(value[key]) ? value[key] : [];
 }
 
 function validatePaymentCaptureBindings(request: string, nodes: UiNode[], sources: UiDataSource[], issues: SemanticUiIssue[]): void {
@@ -322,6 +472,27 @@ function validateLiquidityEvidenceBindings(
       code: "preceding_expenses_binding_required",
       message: "La interfaz debe mostrar los gastos previos usando el análisis derivado",
     });
+  }
+  const request = normalizeText(query.split("Nueva solicitud del usuario:").at(-1) ?? query);
+  if (/\b(?:filtra(?:r|la)?|enfoca|deja)\b/u.test(request)
+    && /\btabla\b/u.test(request)
+    && /\bmovimientos?\b/u.test(request)) {
+    const expected = readSourceRows(source.data, "transactions")
+      .flatMap((row) => isRecord(row) && typeof row.id === "string" ? [row.id] : []);
+    const completeTable = expected.length > 0 && nodes.some((node) => {
+      if (node.type !== "table") return false;
+      const resolved = resolveUiDataReference(node.data, dataSources);
+      if (!Array.isArray(resolved)) return false;
+      const visible = node.maxRows < 10 ? resolved.slice(0, node.maxRows) : resolved;
+      const ids = visible.flatMap((row) => isRecord(row) && typeof row.id === "string" ? [row.id] : []);
+      return ids.length === expected.length && expected.every((id) => ids.includes(id));
+    });
+    if (!completeTable) {
+      issues.push({
+        code: "liquidity_transactions_table_incomplete",
+        message: "La tabla filtrada debe contener todos los movimientos observados del rango, no sólo los gastos previos al mínimo.",
+      });
+    }
   }
 }
 

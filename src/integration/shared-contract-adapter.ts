@@ -146,24 +146,33 @@ function normalizeSourceData(source: UiDataSource): unknown {
   return { dataType, value: normalized };
 }
 
-function normalizeFinancialValues(value: unknown, field?: string): unknown {
+type FinancialNumericSemantic = "currency" | "percentage";
+
+function normalizeFinancialValues(
+  value: unknown,
+  field?: string,
+  inheritedSemantic?: FinancialNumericSemantic,
+): unknown {
+  const semantic: FinancialNumericSemantic | undefined = percentageFinancialFields.has(field ?? "")
+    ? "percentage"
+    : inheritedSemantic ?? (numericFinancialFields.has(field ?? "") ? "currency" : undefined);
   if (typeof value === "string" && field) {
     const label = financialValueLabels[field]?.[value.toLowerCase()];
     if (label) return label;
   }
-  if (typeof value === "string" && numericFinancialFields.has(field ?? "")) {
+  if ((typeof value === "string" || typeof value === "number") && semantic === "percentage") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Number((numeric / 100).toFixed(6)) : value;
+  }
+  if (typeof value === "string" && semantic === "currency") {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : value;
   }
-  if ((typeof value === "string" || typeof value === "number") && percentageFinancialFields.has(field ?? "")) {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric / 100 : value;
-  }
-  if (Array.isArray(value)) return value.map((item) => normalizeFinancialValues(item));
+  if (Array.isArray(value)) return value.map((item) => normalizeFinancialValues(item, undefined, semantic));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value)
       .filter(([key]) => !privateFieldPattern.test(key))
-      .map(([key, item]) => [key, normalizeFinancialValues(item, key)]));
+      .map(([key, item]) => [key, normalizeFinancialValues(item, key, semantic)]));
   }
   return value;
 }
@@ -228,7 +237,7 @@ function adaptNode(node: UiNode, context: AdapterContext): UINode {
         gap: "md",
         children: [
           { type: "heading", content: node.title, level: 3 },
-          ...node.fields.map((field) => adaptField(field, context)),
+          ...node.fields.map((field) => adaptField(field, context, /(?:revis|prepar).*pago/iu.test(node.submitLabel))),
           { type: "button", id: getNodeId(`${node.id}-submit`, context), label: node.submitLabel, event: "form.submit" },
         ],
       };
@@ -271,16 +280,22 @@ function adaptTable(
   id: string,
   context: AdapterContext,
 ): UINode {
+  const rows = resolveSourceRows(node.data, context);
   const dataBinding = node.maxRows < 10
     ? createLimitedCollectionBinding(node.data, node.maxRows, id, context)
     : adaptReference(node.data, context);
+  const columns = node.columns.map(adaptTableColumn);
 
   return {
     type: "table",
     id,
     ariaLabel: node.title,
     dataBinding,
-    columns: node.columns.map(adaptTableColumn),
+    columns,
+    ...(rows.length > 1 ? {
+      sorting: { enabled: true },
+      filtering: { enabled: true, fields: columns.map((column) => column.field) },
+    } : {}),
     pagination: { pageSize: normalizePageSize(node.maxRows) },
   };
 }
@@ -346,7 +361,7 @@ function adaptMultiSeriesChart(
   const rows = resolveSourceRows(node.data, context);
   const dataBinding = `${requireSourceId(node.data.sourceId, context)}_${id.replaceAll("-", "_")}`;
   context.data[dataBinding] = rows.flatMap((row) => node.series.map((series) => ({
-    category: row[node.categoryKey] ?? "—",
+    category: normalizeFinancialValues(row[node.categoryKey] ?? "—", node.categoryKey),
     series: series.label,
     value: normalizeFinancialValues(row[series.key], series.key),
   })));
@@ -391,11 +406,13 @@ function resolveSourceRows(reference: UiDataReference, context: AdapterContext):
 function adaptField(
   field: Extract<UiNode, { type: "form" }>["fields"][number],
   context: AdapterContext,
+  paymentReviewForm: boolean,
 ): UINode {
   const id = getNodeId(field.id, context);
   if (field.type === "date") return { type: "datePicker", id, label: field.label, event: "form.value.changed" };
   if (field.type === "select") return { type: "select", id, label: field.label, event: "form.value.changed", options: field.options, required: true, placeholder: "Selecciona una opción", ...(field.initialValue ? { initialValue: field.initialValue } : {}) };
-  return { type: "input", id, label: field.label, event: "form.value.changed", placeholder: field.placeholder, validation: { maxLength: field.maxLength }, ...(field.initialValue ? { initialValue: field.initialValue } : {}) };
+  const required = paymentReviewForm && /^(?:monto|importe|cantidad|moneda)\b/iu.test(field.label.trim());
+  return { type: "input", id, label: field.label, event: "form.value.changed", placeholder: field.placeholder, validation: { maxLength: field.maxLength, ...(required ? { required: true } : {}) }, ...(field.initialValue ? { initialValue: field.initialValue } : {}) };
 }
 
 function adaptFilter(

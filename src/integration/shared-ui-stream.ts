@@ -264,7 +264,8 @@ function findCollection(value: unknown, binding: string, depth = 0): CollectionC
   if (depth > MAX_SEARCH_DEPTH) return undefined;
   if (Array.isArray(value)) {
     const records = value.filter(isRecord);
-    if (records.length === value.length && records.length > 0 && collectSafeFields(records).length > 0) {
+    const usefulFields = collectSafeFields(records).filter((field) => field !== "currency" && field !== "dataType");
+    if (records.length === value.length && records.length > 0 && usefulFields.length >= 2) {
       return { binding, records };
     }
     return undefined;
@@ -283,7 +284,8 @@ function findScalar(value: unknown, binding: string, depth = 0): ScalarCandidate
   if (depth > MAX_SEARCH_DEPTH || !isRecord(value)) return undefined;
   const entries = Object.entries(value).filter(([key]) => isSafeField(key));
   const scalarEntries = entries.filter((entry): entry is [string, string | number | boolean | null] => isScalar(entry[1]));
-  const preferred = scalarEntries.find(([, child]) => typeof child === "number") ?? scalarEntries[0];
+  const preferred = scalarEntries.find(([key, child]) => typeof child === "number"
+    && key !== "dataType" && key !== "currency");
   if (preferred) {
     return { key: preferred[0], value: preferred[1], binding: `${binding}.${preferred[0]}` };
   }

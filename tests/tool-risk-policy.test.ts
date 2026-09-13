@@ -3,6 +3,7 @@ import test from "node:test";
 import { paymentWritePermissionsForQuery } from "../src/agent/payment-write-policy.js";
 import {
   financialToolRisk,
+  PERSONAL_BANKING_TOOL_NAMES,
   selectAllowedTools,
 } from "../src/agent/tool-policy.js";
 
@@ -15,6 +16,19 @@ test("clasifica herramientas READ, WRITE y CRITICAL_WRITE", () => {
   assert.equal(financialToolRisk("cancel_payment_intent"), "write");
   assert.equal(financialToolRisk("confirm_payment"), "critical-write");
   assert.equal(financialToolRisk("unknown_tool"), undefined);
+});
+
+test("BP0 limita el catálogo visible a herramientas de lectura de banca personal", () => {
+  const definitions = [
+    definition("get_accounts"), definition("get_transactions"),
+    definition("compare_periods"), definition("detect_transaction_anomalies"),
+    definition("evaluate_financial_health"), definition("simulate_savings"),
+    definition("create_payment_intent"), definition("confirm_payment"),
+  ];
+  const selected = selectAllowedTools(definitions, PERSONAL_BANKING_TOOL_NAMES);
+  assert.deepEqual(selected.map((tool) => tool.name), [
+    "get_accounts", "get_transactions", "compare_periods", "detect_transaction_anomalies",
+  ]);
 });
 
 test("expone al modelo únicamente las herramientas autorizadas para la solicitud", () => {

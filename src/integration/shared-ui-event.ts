@@ -199,7 +199,7 @@ function validateEventValue(node: UINode, value: UIEvent["event"]["value"]): voi
       return;
     case "input":
       if (typeof value !== "string") rejectValue();
-      if (node.validation?.required && value.length === 0) rejectValue();
+      if (node.validation?.required && value.trim().length === 0) rejectValue();
       if (value.length < (node.validation?.minLength ?? 0) || value.length > (node.validation?.maxLength ?? 500)) rejectValue();
       return;
     case "checkbox":

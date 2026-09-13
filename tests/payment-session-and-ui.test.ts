@@ -26,6 +26,21 @@ test("L11 los select de captura requieren elección explícita sin valor inicial
   }
 });
 
+test("C0 el contrato adaptado exige monto y moneda para revisar un pago", () => {
+  const document = parseUiDocument({ version: "1.0", root: { type: "form", id: "capture", title: "Preparar pago", submitLabel: "Revisar pago", fields: [
+    { type: "text", id: "amount", label: "Monto", initialValue: "731" },
+    { type: "text", id: "currency", label: "Moneda", initialValue: "MXN" },
+    { type: "text", id: "concept", label: "Concepto", initialValue: "Prueba C0" },
+  ] } }, []);
+  const shared = adaptUiPayload(document, []);
+  if (shared.specification.root.type !== "stack") throw new Error("Expected stack");
+  const inputs = shared.specification.root.children.filter((node) => node.type === "input");
+  assert.equal(inputs.length, 3);
+  assert.equal(inputs[0]?.type === "input" && inputs[0].validation?.required, true);
+  assert.equal(inputs[1]?.type === "input" && inputs[1].validation?.required, true);
+  assert.equal(inputs[2]?.type === "input" && inputs[2].validation?.required, undefined);
+});
+
 test("la sesión conserva y después elimina el intent pendiente", async () => {
   const store = new AgentSessionStore(() => 1_000);
   const first = await store.begin({ actorId, sessionId: "session-1", correlationId: "correlation-1" });

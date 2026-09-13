@@ -15,6 +15,16 @@ export const READ_FINANCIAL_TOOL_NAMES = [
   "simulate_savings",
 ] as const;
 
+export const PERSONAL_BANKING_TOOL_NAMES = [
+  "get_accounts",
+  "get_transactions",
+  "get_financial_summary",
+  "get_spending_by_category",
+  "get_cashflow",
+  "compare_periods",
+  "detect_transaction_anomalies",
+] as const;
+
 export const WRITE_FINANCIAL_TOOL_NAMES = [
   "create_payment_intent",
   "cancel_payment_intent",

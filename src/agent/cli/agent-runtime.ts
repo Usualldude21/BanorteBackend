@@ -17,6 +17,7 @@ import {
 } from "../../application/ports/payment-write-authorization.js";
 import {
   CRITICAL_WRITE_FINANCIAL_TOOL_NAMES,
+  PERSONAL_BANKING_TOOL_NAMES,
   READ_FINANCIAL_TOOL_NAMES,
 } from "../tool-policy.js";
 import { randomUUID } from "node:crypto";
@@ -42,11 +43,14 @@ export async function createAgentRuntime(
   const geminiConfig = requireGeminiConfig();
   const supabaseSession = await sessionFactory();
   const paymentWriteGrant = resolvePaymentWriteGrant(options, supabaseSession.user.id);
-  const permittedToolNames = [
-    ...READ_FINANCIAL_TOOL_NAMES,
-    ...(paymentWriteGrant?.permissions.map((permission) => permission.toolName) ?? []),
-    ...(options.paymentConfirmationGrant ? CRITICAL_WRITE_FINANCIAL_TOOL_NAMES : []),
-  ];
+  const personalBankingOnly = env.FINANCIAL_EXPERIENCE_SCOPE === "personal_banking";
+  const permittedToolNames = personalBankingOnly
+    ? [...PERSONAL_BANKING_TOOL_NAMES]
+    : [
+        ...READ_FINANCIAL_TOOL_NAMES,
+        ...(paymentWriteGrant?.permissions.map((permission) => permission.toolName) ?? []),
+        ...(options.paymentConfirmationGrant ? CRITICAL_WRITE_FINANCIAL_TOOL_NAMES : []),
+      ];
   const mcpClient = await FinancialMcpClient.connect(
     crearServidor(supabaseSession, {
       ...(paymentWriteGrant ? {
@@ -63,13 +67,14 @@ export async function createAgentRuntime(
   const orchestrator = new AgentOrchestrator(
     new GeminiModel(geminiConfig),
     mcpClient,
-    options.uiGenerator ?? new GeminiUiGenerator(geminiConfig),
+    options.uiGenerator ?? new GeminiUiGenerator(geminiConfig, fetch, env.FINANCIAL_EXPERIENCE_SCOPE),
     {
       maxToolCalls: env.AGENT_MAX_TOOL_CALLS,
       maxToolRetries: env.AGENT_TOOL_MAX_RETRIES,
       retryDelayMs: env.AGENT_RETRY_DELAY_MS,
       userId: supabaseSession.user.id,
       permittedToolNames,
+      experienceScope: env.FINANCIAL_EXPERIENCE_SCOPE,
     },
   );
 

@@ -4,6 +4,7 @@ const EnvSchema = z.object({
   MCP_SERVER_NAME: z.string().min(1).default("agent-mcp-server"),
   MCP_SERVER_VERSION: z.string().min(1).default("0.1.0"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  FINANCIAL_EXPERIENCE_SCOPE: z.enum(["personal_banking", "full"]).default("personal_banking"),
   MCP_TRANSPORT: z.enum(["stdio", "http"]).default("stdio"),
   MCP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1_000).default(60),
   MCP_WRITE_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(100).default(6),

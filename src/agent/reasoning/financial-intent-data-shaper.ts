@@ -1,24 +1,33 @@
 import { addDecimal, compareDecimal } from "../../domain/decimal.js";
 import { CashflowOutputSchema } from "../../schemas/analytics.schema.js";
+import { ComparePeriodsOutputSchema } from "../../schemas/compare-periods.schema.js";
 import {
   GetTransactionsOutputSchema,
   type GetTransactionsOutput,
 } from "../../schemas/get-transactions.schema.js";
 import { type UiDataSource } from "../../ui/dsl/ui.schema.js";
+import type { FinancialExperienceScope } from "../security/financial-scope-policy.js";
+import { categoryIdentity, selectedComparisonCategories } from "./personal-category-selection.js";
 
 const PRECEDING_EXPENSE_WINDOW_DAYS = 7;
 export const LIQUIDITY_ANALYSIS_SOURCE = "derived_liquidity_analysis";
+export const COMPARISON_CATEGORY_VIEW_SOURCE = "derived_comparison_category_view";
 
 interface ShapeFinancialDataInput {
   query: string;
   currentDate: string;
   dataSources: readonly UiDataSource[];
+  experienceScope?: FinancialExperienceScope;
 }
 
 export function shapeFinancialDataForIntent(
   input: ShapeFinancialDataInput,
 ): UiDataSource[] {
   const sources = [...input.dataSources];
+  if (input.experienceScope === "personal_banking") {
+    const categoryView = createComparisonCategoryView(input.query, sources);
+    if (categoryView) sources.push(categoryView);
+  }
   if (!requiresLiquidityPrecursorAnalysis(input.query)) return sources;
 
   const cashflow = findDailyCashflow(sources);
@@ -108,6 +117,7 @@ export function shapeFinancialDataForIntent(
       timeline,
       monthlyLows,
       precedingExpenses,
+      transactions,
       metadata: {
         startDate: cashflow.metadata.startDate,
         endDate,
@@ -119,10 +129,48 @@ export function shapeFinancialDataForIntent(
   }];
 }
 
+function createComparisonCategoryView(query: string, sources: readonly UiDataSource[]): UiDataSource | undefined {
+  const comparisonSource = [...sources].reverse().find((source) => source.toolName === "compare_periods");
+  if (!comparisonSource) return undefined;
+  const parsed = ComparePeriodsOutputSchema.safeParse(comparisonSource.data);
+  if (!parsed.success || parsed.data.comparisons.length !== 1) return undefined;
+  const comparison = parsed.data.comparisons[0]!;
+  const selected = selectedComparisonCategories(query, comparison.categories.map((row) => row.category));
+  const categories = comparison.categories
+    .filter((row) => !selected || selected.includes(categoryIdentity(row.category)))
+    .sort((left, right) => {
+      const leftImpact = left.change.absoluteChange.replace(/^-/, "");
+      const rightImpact = right.change.absoluteChange.replace(/^-/, "");
+      return compareDecimal(rightImpact, leftImpact) || left.category.localeCompare(right.category);
+    })
+    .map((row) => ({
+      category: row.category,
+      currency: comparison.currency,
+      previousValue: row.change.previousValue,
+      currentValue: row.change.currentValue,
+      absoluteChange: row.change.absoluteChange,
+      percentageChange: row.change.percentageChange,
+    }));
+  if (categories.length === 0) return undefined;
+  return {
+    id: `source-${nextSourceNumber(sources)}`,
+    toolName: COMPARISON_CATEGORY_VIEW_SOURCE,
+    data: {
+      categories,
+      metadata: {
+        previousPeriod: parsed.data.metadata.previousPeriod,
+        currentPeriod: parsed.data.metadata.currentPeriod,
+        currency: comparison.currency,
+        ...(selected ? { selectedCategories: selected } : {}),
+      },
+    },
+  };
+}
+
 export function requiresLiquidityPrecursorAnalysis(query: string): boolean {
   const normalized = query.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("es-MX");
   return /\bliquidez\b/u.test(normalized)
-    && /\b(?:antes|previos?|preceden|precedentes|justo antes|drenan|causan?)\b/u.test(normalized);
+    && /\b(?:antes|previos?|preceden|precedieron|precedentes|justo antes|drenan|causan?)\b/u.test(normalized);
 }
 
 function findDailyCashflow(sources: readonly UiDataSource[]) {

@@ -52,9 +52,11 @@ import {
 } from "../observability/telemetry.js";
 import {
   classifyFinancialQuery,
+  createMissingPeriodResponse,
   createFinancialScopeResponse,
   isFinancialResponseSafe,
   type FinancialScopeBlockReason,
+  type FinancialExperienceScope,
 } from "./security/financial-scope-policy.js";
 
 interface AgentOrchestratorConfig {
@@ -66,6 +68,7 @@ interface AgentOrchestratorConfig {
   userId?: string;
   maxReasoningRepairs?: number;
   permittedToolNames?: readonly string[];
+  experienceScope?: FinancialExperienceScope;
 }
 
 export interface AgentStreamOptions {
@@ -142,16 +145,34 @@ export class AgentOrchestrator {
         stage: "planning",
         message: "Analizando la consulta financiera",
       });
-      const scopeDecision = classifyFinancialQuery(query);
+      const scopeDecision = classifyFinancialQuery(query, this.config.experienceScope);
       if (!scopeDecision.allowed) {
         logger.warn("Agente: consulta bloqueada por política de ámbito", {
           reason: scopeDecision.reason,
         });
-        const response = createScopeAgentResponse(scopeDecision.reason);
+        const response = createScopeAgentResponse(scopeDecision.reason, [], this.config.experienceScope);
         yield publish({
           type: "status",
           stage: "rendering-ui",
           message: "Aplicando la política de seguridad financiera",
+        });
+        yield publish({ type: "ui-snapshot", ui: response.ui, dataSources: [] });
+        requestSpan.complete({ toolCallCount: 0 });
+        yield publish({ type: "completed", response });
+        return;
+      }
+      const missingPeriod = createMissingPeriodResponse(query);
+      if (missingPeriod) {
+        const response = AgentResponseSchema.parse({
+          answer: missingPeriod.answer,
+          toolsUsed: [],
+          ui: missingPeriod.ui,
+          dataSources: [],
+        });
+        yield publish({
+          type: "status",
+          stage: "rendering-ui",
+          message: "Solicitando el periodo necesario para el análisis",
         });
         yield publish({ type: "ui-snapshot", ui: response.ui, dataSources: [] });
         requestSpan.complete({ toolCallCount: 0 });
@@ -163,7 +184,7 @@ export class AgentOrchestrator {
       const session = this.model.createSession({
         query,
         tools: definitions,
-        systemInstruction: createFinancialSystemPrompt(this.currentDate()),
+        systemInstruction: createFinancialSystemPrompt(this.currentDate(), this.config.experienceScope),
       });
       const executedCalls = new Set<string>();
       let pendingResults: AgentToolResult[] = [];
@@ -186,7 +207,7 @@ export class AgentOrchestrator {
               reason: "unsafe-response",
               toolCallCount: toolsUsed.length,
             });
-            const response = createScopeAgentResponse("unsafe-response", toolsUsed);
+            const response = createScopeAgentResponse("unsafe-response", toolsUsed, this.config.experienceScope);
             yield publish({
               type: "status",
               stage: "rendering-ui",
@@ -201,6 +222,7 @@ export class AgentOrchestrator {
             query,
             currentDate: this.currentDate(),
             dataSources,
+            ...(this.config.experienceScope ? { experienceScope: this.config.experienceScope } : {}),
           });
           const reasoningIssues = validateFinancialReasoning({
             query,
@@ -409,8 +431,9 @@ export class AgentOrchestrator {
 function createScopeAgentResponse(
   reason: FinancialScopeBlockReason | "unsafe-response",
   toolsUsed: readonly string[] = [],
+  experienceScope: FinancialExperienceScope = "full",
 ): AgentResponse {
-  const safe = createFinancialScopeResponse(reason);
+  const safe = createFinancialScopeResponse(reason, experienceScope);
   return AgentResponseSchema.parse({
     answer: safe.answer,
     toolsUsed: [...toolsUsed],

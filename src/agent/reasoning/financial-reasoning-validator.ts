@@ -1,4 +1,6 @@
 import { ComparePeriodsOutputSchema } from "../../schemas/compare-periods.schema.js";
+import { DetectAnomaliesOutputSchema } from "../../schemas/detect-anomalies.schema.js";
+import { GetTransactionsOutputSchema } from "../../schemas/get-transactions.schema.js";
 import { type UiDataSource } from "../../ui/dsl/ui.schema.js";
 import {
   LIQUIDITY_ANALYSIS_SOURCE,
@@ -7,11 +9,14 @@ import {
 
 export type FinancialReasoningIssueCode =
   | "anomaly-evidence-required"
+  | "anomaly-sample-insufficient"
   | "comparison-evidence-required"
   | "liquidity-window-evidence-required"
   | "projection-assumptions-required"
   | "partial-period-disclosure-required"
-  | "silent-category-substitution";
+  | "silent-category-substitution"
+  | "substantive-answer-required"
+  | "transfer-history-evidence-required";
 
 export interface FinancialReasoningIssue {
   code: FinancialReasoningIssueCode;
@@ -33,6 +38,11 @@ interface FinancialReasoningInput {
 }
 
 const ANOMALY_INTENT = /\b(?:anomal(?:ía|ia|ías|ias)|inusual(?:es)?|atípico(?:s|a|as)?|atipico(?:s|a|as)?|fuera de lo normal|debería preocuparme|deberia preocuparme|preocupante)\b/iu;
+const ANOMALY_CONCLUSION = /\b(?:(?:sin|no\s+(?:hay|hubo|se\s+(?:detectaron|identificaron|registraron)))\s+anomal(?:ía|ia|ías|ias)|anomal(?:ía|ia|ías|ias)\s+(?:detectad|identificad|registrad)[a-z]*|movimientos?\s+(?:inusual(?:es)?|atípico(?:s|a|as)?|atipico(?:s|a|as)?))\b/iu;
+const UNSUPPORTED_NEGATIVE_ANOMALY_CONCLUSION = /\b(?:sin\s+(?:anomal(?:ía|ia|ías|ias)|movimientos?\s+(?:atípicos?|atipicos?|inusuales?))|no\s+(?:(?:hay|hubo)\s+|se\s+(?:detectaron|identificaron|registraron|encontraron)\s+)(?:anomal(?:ía|ia|ías|ias)|movimientos?\s+(?:atípicos?|atipicos?|inusuales?)|importes?\s+(?:atípicos?|atipicos?|inusuales?)))\b/iu;
+const HISTORICAL_TRANSFER_INTENT = /\btransferencias?\b/iu;
+const TRANSFER_HISTORY_CONTEXT = /\b(?:mis|historicas?|históricas?|pasadas?|ahorro|entre mis cuentas|contarlas dos veces)\b/iu;
+const TRANSFER_EXECUTION_CONTEXT = /\b(?:prepara|programa|ejecuta|confirma|transfiere|transferir|envia|envía)\b/iu;
 const COMPARISON_INTENT = /\b(?:(?:compar(?:a|ar|ación|acion)).{0,80}(?:mes|periodo|categoría|categoria|gasto|ingreso|flujo)|mes (?:actual|en curso|este mes).{0,60}mes (?:anterior|pasado)|mes (?:anterior|pasado).{0,60}mes (?:actual|en curso|este mes)|rindió menos|rindio menos)\b/iu;
 const PROJECTION_INTENT = /\b(?:simula|simular|simulación|simulacion|proyecta|proyección|proyeccion|si sigo|qué pasaría|que pasaria|voy a tener|alcanzar(?:é|e)?|meta de ahorro|ahorrar para)\b/iu;
 const ASSUMPTION_DISCLOSURE = /\b(?:supuesto(?:s)?|asumiendo|si se mantiene|si mantienes|a este ritmo|estimación|estimacion|escenario|proyectad[oa]|no garantiza)\b/iu;
@@ -44,10 +54,29 @@ export function validateFinancialReasoning(
 ): FinancialReasoningIssue[] {
   const issues: FinancialReasoningIssue[] = [];
 
-  if (ANOMALY_INTENT.test(input.query) && !input.toolsUsed.includes("detect_transaction_anomalies")) {
+  if (!hasSubstantiveAnswer(input.answer)) {
+    issues.push({
+      code: "substantive-answer-required",
+      message: "La respuesta debe incluir una conclusión financiera comprensible; las etiquetas OBSERVED o RECOMMENDED por sí solas no son una respuesta.",
+    });
+  }
+
+  if ((ANOMALY_INTENT.test(input.query) || ANOMALY_CONCLUSION.test(input.answer))
+    && !input.toolsUsed.includes("detect_transaction_anomalies")) {
     issues.push({
       code: "anomaly-evidence-required",
       message: "Una conclusión sobre anomalías o señales preocupantes requiere detect_transaction_anomalies.",
+    });
+  }
+
+  if (input.dataSources.some((source) => {
+    if (source.toolName !== "detect_transaction_anomalies") return false;
+    const result = DetectAnomaliesOutputSchema.safeParse(source.data);
+    return result.success && result.data.metadata.eligibleGroups === 0;
+  }) && UNSUPPORTED_NEGATIVE_ANOMALY_CONCLUSION.test(input.answer)) {
+    issues.push({
+      code: "anomaly-sample-insufficient",
+      message: "Con cero grupos elegibles no se puede concluir que no haya anomalías: declara muestra insuficiente e informa transacciones evaluadas, grupos elegibles y mínimo de muestra.",
     });
   }
 
@@ -55,6 +84,21 @@ export function validateFinancialReasoning(
     issues.push({
       code: "comparison-evidence-required",
       message: "La comparación solicitada requiere compare_periods o una serie temporal de get_cashflow.",
+    });
+  }
+
+  if (HISTORICAL_TRANSFER_INTENT.test(input.query)
+    && TRANSFER_HISTORY_CONTEXT.test(input.query)
+    && !TRANSFER_EXECUTION_CONTEXT.test(input.query)
+    && !input.dataSources.some((source) => {
+    if (source.toolName !== "get_transactions") return false;
+    const result = GetTransactionsOutputSchema.safeParse(source.data);
+    return result.success && result.data.metadata.appliedFilters.transactionType === "transfer"
+      && !result.data.pagination.hasMore;
+  })) {
+    issues.push({
+      code: "transfer-history-evidence-required",
+      message: "Una consulta sobre transferencias históricas propias requiere get_transactions con transactionType=transfer, el periodo solicitado y paginación completa hasta hasMore=false; no infieras importes o frecuencia desde saldos agregados.",
     });
   }
 
@@ -121,4 +165,11 @@ function hasUnequalComparisonPeriods(dataSources: readonly UiDataSource[]): bool
 
 function inclusiveDays(startDate: string, endDate: string): number {
   return Math.floor((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1;
+}
+
+function hasSubstantiveAnswer(answer: string): boolean {
+  const content = answer
+    .replace(/\b(?:OBSERVED|RECOMMENDED|SIMULATED)\s*:/giu, "")
+    .replace(/[\p{P}\p{S}\s]/gu, "");
+  return content.length >= 12;
 }

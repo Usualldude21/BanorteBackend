@@ -156,6 +156,33 @@ test("los importes de simulación llegan al renderer como números formateables"
   assert.deepEqual(value.timeline, [{ period: 1, contribution: 15000, interestEarned: 0, balance: 15000 }]);
 });
 
+test("BP1 normaliza porcentajes anidados de compare_periods como fracciones", () => {
+  const value = adaptUiDataSource({
+    id: "source-1",
+    toolName: "compare_periods",
+    data: {
+      comparisons: [{
+        currency: "MXN",
+        income: { previousValue: "30000.00", currentValue: "30000.00", absoluteChange: "0.00", percentageChange: "0.00", trend: "unchanged" },
+        expenses: { previousValue: "20650.00", currentValue: "27600.00", absoluteChange: "6950.00", percentageChange: "33.66", trend: "increased" },
+        savingsRate: { previousValue: "31.17", currentValue: "8.00", absoluteChange: "-23.17", percentageChange: "-74.33", trend: "decreased" },
+        categories: [],
+      }],
+      metadata: { queriedAt: "2026-09-12T00:00:00.000Z", previousPeriod: { startDate: "2026-07-01", endDate: "2026-07-31" }, currentPeriod: { startDate: "2026-08-01", endDate: "2026-08-31" } },
+    },
+  }).value as Record<string, unknown>;
+  const comparison = (value.comparisons as Array<Record<string, unknown>>)[0]!;
+  const savingsRate = comparison.savingsRate as Record<string, unknown>;
+  const expenses = comparison.expenses as Record<string, unknown>;
+
+  assert.equal(savingsRate.currentValue, 0.08);
+  assert.equal(savingsRate.previousValue, 0.3117);
+  assert.equal(savingsRate.absoluteChange, -0.2317);
+  assert.equal(savingsRate.percentageChange, -0.7433);
+  assert.equal(expenses.currentValue, 27600);
+  assert.equal(expenses.percentageChange, 0.3366);
+});
+
 test("rechaza eventos fabricados o valores que no pertenecen al control", () => {
   const forged = uiEventSchema.parse({
     version: "1",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChallengeHarness, queryRequest } from "./support/challenge-harness.js";
+import { createProvisionalUiPayload } from "../src/integration/shared-ui-stream.js";
 
 test("I6 emite DataPatch antes de la primera UI que consume sus bindings", async () => {
   const harness = new ChallengeHarness();
@@ -27,6 +28,16 @@ test("I6 emite DataPatch antes de la primera UI que consume sus bindings", async
   assert.equal(table.columns.find((column) => (
     column.field === "transaction_count" || column.field === "transactionCount"
   ))?.label, "Transacciones");
+});
+
+test("BP6.5 evita una tabla provisional que sólo muestre la moneda", () => {
+  const preview = createProvisionalUiPayload({
+    id: "source-1", toolName: "compare_periods", data: {
+      comparisons: [{ currency: "MXN", expenses: { previousValue: "20650.00", currentValue: "27600.00" } }],
+      dataType: "OBSERVED",
+    },
+  }, 1);
+  assert.equal(preview, null);
 });
 
 function findTable(node: unknown): { type: "table"; columns: Array<{ field: string; label: string; format?: string }> } | undefined {

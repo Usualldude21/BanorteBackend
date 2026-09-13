@@ -23,6 +23,7 @@ import { createUiRecoveryPlan } from "./ui-recovery-planner.js";
 import { createIntentAwareUiFallback } from "./intent-aware-ui-fallback.js";
 import { groundPaymentFormOptions } from "./ground-payment-form-options.js";
 import { logger } from "../../config/logger.js";
+import type { FinancialExperienceScope } from "../../agent/security/financial-scope-policy.js";
 
 const MAX_UI_CONTEXT_BYTES = 1_000_000;
 const MAX_UI_OUTPUT_BYTES = 512_000;
@@ -39,6 +40,7 @@ export class GeminiUiGenerator implements UiGenerator {
   constructor(
     config: GeminiModelConfig,
     fetchImplementation: FetchImplementation = fetch,
+    private readonly experienceScope: FinancialExperienceScope = "full",
   ) {
     this.client = new GeminiApiClient(config, fetchImplementation);
   }
@@ -57,8 +59,8 @@ export class GeminiUiGenerator implements UiGenerator {
     let semanticIssues: SemanticUiIssue[] | undefined;
     for (let attempt = 1; attempt <= MAX_UI_GENERATION_ATTEMPTS; attempt += 1) {
       const systemPrompt = attempt === 1
-        ? createUiSystemPrompt()
-        : `${createUiSystemPrompt()}\n${repairInstruction}`;
+        ? createUiSystemPrompt(this.experienceScope)
+        : `${createUiSystemPrompt(this.experienceScope)}\n${repairInstruction}`;
       const content = await this.client.generateContent({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: serializedInput }] }],
@@ -73,7 +75,9 @@ export class GeminiUiGenerator implements UiGenerator {
 
       try {
         const document = groundPaymentFormOptions(parseUiDocument(JSON.parse(text) as unknown, input.dataSources), input.dataSources);
-        const semanticResult = validateUiSemantics(input.query, document, input.dataSources);
+        const semanticResult = validateUiSemantics(input.query, document, input.dataSources, {
+          enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
+        });
         if (!semanticResult.success) throw new UiSemanticValidationError(semanticResult.issues);
         return document;
       } catch (error) {
@@ -89,9 +93,11 @@ export class GeminiUiGenerator implements UiGenerator {
             ? error.issues.slice(0, 8).map((issue) => issue.path.join(".")) : [],
         });
         if (error instanceof UiSemanticValidationError) semanticIssues = error.issues;
-        const fallback = createIntentAwareUiFallback(input.query, input.dataSources);
+        const fallback = createIntentAwareUiFallback(input.query, input.dataSources, this.experienceScope);
         if (fallback) {
-          const result = validateUiSemantics(input.query, fallback, input.dataSources);
+          const result = validateUiSemantics(input.query, fallback, input.dataSources, {
+            enforcePersonalBankingComposition: this.experienceScope === "personal_banking",
+          });
           if (result.success) return fallback;
         }
         repairInstruction = createUiRepairInstruction(error, input.dataSources, attempt + 1);

@@ -1,15 +1,25 @@
 import { type UiDocument } from "../../ui/dsl/ui.schema.js";
 
-export type FinancialScopeBlockReason = "prompt-injection" | "out-of-scope";
+export type FinancialExperienceScope = "personal_banking" | "full";
+export type FinancialScopeBlockReason = "prompt-injection" | "out-of-scope" | "product-scope";
 
 export type FinancialScopeDecision =
   | { allowed: true; category: "financial" | "greeting" | "capabilities" }
   | { allowed: false; reason: FinancialScopeBlockReason };
 
-const FINANCIAL_INTENT = /\b(?:finanz(?:a|as|iero|iera)|banc(?:o|a|ario|aria)|cuenta(?:s)?|saldo(?:s)?|dinero|transacci(?:on|ones)|movimiento(?:s)?|gast(?:o(?:s)?|e)|ingreso(?:s)?|ahorr(?:o(?:s)?|ar)|presupuesto|pago(?:s)?|pagar|transfer(?:ir|encia|encias)?|beneficiario(?:s)?|nomina|efectivo|flujo\s+de\s+efectivo|liquidez|prestamo(?:s)?|credito(?:s)?|deuda(?:s)?|interes(?:es)?|tasa(?:s)?|moneda(?:s)?|mxn|usd|eur|peso(?:s)?|dolar(?:es)?|categoria(?:s)?|deposito(?:s)?|retiro(?:s)?|tarjeta(?:s)?|fraude|anomalia(?:s)?|inversion(?:es)?|rendimiento(?:s)?|cash\s*flow|account(?:s)?|balance(?:s)?|transaction(?:s)?|expense(?:s)?|income|saving(?:s)?|budget|payment(?:s)?|loan(?:s)?|debt(?:s)?|interest|beneficiar(?:y|ies))\b/u;
-const FINANCIAL_PHRASE = /\b(?:cuanto\s+(?:dinero\s+)?tengo|dinero\s+disponible|salud\s+financiera|resumen\s+financiero|mes\s+(?:actual|pasado|anterior)|periodo\s+(?:actual|anterior))\b/u;
+const FINANCIAL_INTENT = /\b(?:finanz(?:a|as|iero|iera)|banc(?:o|a|ario|aria)|cuenta(?:s)?|saldo(?:s)?|dinero|transacci(?:on|ones)|movimiento(?:s)?|compra(?:s)?|gast(?:o(?:s)?|e|ar|ando)|ingreso(?:s)?|ahorr[a-z]*|presupuesto|pago(?:s)?|pagar|transfer(?:ir|encia|encias)?|beneficiario(?:s)?|nomina|efectivo|flujo\s+de\s+efectivo|liquidez|prestamo(?:s)?|credito(?:s)?|deuda(?:s)?|interes(?:es)?|tasa(?:s)?|moneda(?:s)?|mxn|usd|eur|peso(?:s)?|dolar(?:es)?|categoria(?:s)?|deposito(?:s)?|retiro(?:s)?|tarjeta(?:s)?|fraude|anomalia(?:s)?|inversion(?:es)?|rendimiento(?:s)?|cash\s*flow|account(?:s)?|balance(?:s)?|transaction(?:s)?|expense(?:s)?|income|saving(?:s)?|budget|payment(?:s)?|loan(?:s)?|debt(?:s)?|interest|beneficiar(?:y|ies))\b/u;
+const FINANCIAL_PHRASE = /\b(?:cuanto\s+(?:dinero\s+)?tengo|dinero\s+disponible|salud\s+financiera|resumen\s+financiero|mes\s+(?:actual|pasado|anterior)|periodo\s+(?:actual|anterior)|compar(?:a|ar|acion)\b.{0,80}\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|mes|periodo)|restaurante(?:s)?\b.{0,80}\b(?:gaste|gasto|reducir|nivel|mes|periodo))\b/u;
+const PERSONAL_BANKING_FOLLOW_UP = /\b(?:ahora\s+(?:muestra|muestrame)|(?:solo|solamente)\s+(?:restaurantes|entretenimiento|vivienda|transporte)|cuanto\s+cambi[oó]\s+respecto(?:\s+a)?|(?:ese|esa)\s+(?:cambio|variaci[oó]n))\b/u;
+const UI_EDIT_FOLLOW_UP = /\b(?:filtra(?:r)?|cambia(?:r)?|ajusta(?:r)?|actualiza(?:r)?|edita(?:r)?)\b.{0,80}\b(?:tabla|grafica|vista|visualizacion)\b/u;
+const FULL_EXPERIENCE_FOLLOW_UP = /\b(?:aport(?:ar|e|o|as|amos)|plazo)\b/u;
+const TEMPORAL_FINANCIAL_REQUEST = /\b(?:gast(?:e|é|o|os)|gasto(?:s)?|movimiento(?:s)?|transacci(?:on|ones)|compar(?:a|ar|acion)|categor[ií]a(?:s)?)\b/u;
+const EXPLICIT_PERIOD = /\b(?:hoy|ayer|semana(?:s)?|mes(?:es)?|trimestre(?:s)?|a[nñ]o(?:s)?|periodo(?:s)?|fecha(?:s)?|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|reciente(?:s)?|ultimo(?:s)?|[0-9]{4}-[0-9]{2}-[0-9]{2})\b/u;
 const GREETING = /^(?:hola|buen(?:os|as)?\s+(?:dias|tardes|noches)|hey|hello|hi|gracias|muchas\s+gracias|adios|hasta\s+luego)[!,.?\s]*$/u;
 const CAPABILITIES = /\b(?:que\s+(?:puedes|sabes)\s+hacer|como\s+(?:puedes\s+)?ayudarme|en\s+que\s+(?:puedes\s+)?ayudarme|tus\s+capacidades|quien\s+eres|ayuda\s+financiera|what\s+can\s+you\s+do|how\s+can\s+you\s+help)\b/u;
+const OUTSIDE_PERSONAL_BANKING = /\b(?:pago(?:s)?|pagar|beneficiario(?:s)?|prestamo(?:s)?|credito(?:s)?|deuda(?:s)?|salud\s+financiera|educacion\s+financiera|simul(?:a|ar|acion)|meta\s+de\s+ahorro)\b/u;
+const TRANSFER_REFERENCE = /\b(?:transferencias?|transferir|transfiere|transfiereme)\b/u;
+const TRANSFER_READ_ONLY = /\b(?:muestra(?:me)?|consulta(?:r)?|analiza(?:r)?|explica(?:r)?|compara(?:r)?|revisa(?:r)?|historicas?|pasadas?|realizadas?|mis\s+transferencias|entre\s+mis\s+cuentas|contarlas\s+dos\s+veces)\b/u;
+const TRANSFER_ACTION = /\b(?:transferir|transfiere|transfiereme|prepara(?:r)?|programa(?:r)?|ejecuta(?:r)?|confirma(?:r)?|envia(?:r)?|manda(?:r)?|haz|hacer|realiza(?:r)?)\b.{0,100}\btransferencias?\b|\btransferencias?\b.{0,100}\b(?:ahora|nueva|nuevo|prepara(?:r)?|programa(?:r)?|ejecuta(?:r)?|confirma(?:r)?)\b/u;
 const SAFE_CONVERSATION = /\b(?:hola|gracias|con\s+gusto|puedo\s+ayudarte|como\s+puedo\s+ayudarte|hasta\s+luego)\b/u;
 const FINANCIAL_VALUE = /(?:[$€£]\s*\d|\b\d[\d,.]*\s*(?:mxn|usd|eur|pesos?|dolares?)\b)/u;
 const PROMPT_INJECTION = [
@@ -26,17 +36,58 @@ const PROMPT_INJECTION = [
 const PROMPT_DISCLOSURE = /\b(?:system\s+prompt|developer\s+message|mensaje\s+de\s+sistema|instrucciones\s+internas)\b/u;
 const OUT_OF_SCOPE_CONTENT = /\b(?:capital\s+de\s+[a-z]+|receta(?:s)?|clima|pronostico\s+del\s+tiempo|futbol|partido\s+deportivo|presidente\s+de|javascript|python|programacion|pelicula(?:s)?|serie(?:s)?\s+de\s+television)\b/u;
 
-export function classifyFinancialQuery(query: string): FinancialScopeDecision {
+export function classifyFinancialQuery(
+  query: string,
+  experienceScope: FinancialExperienceScope = "full",
+): FinancialScopeDecision {
   const normalized = normalize(query);
-  if (PROMPT_INJECTION.some((pattern) => pattern.test(normalized))) {
+  const request = latestUserRequest(normalized);
+  if (PROMPT_INJECTION.some((pattern) => pattern.test(request))) {
     return { allowed: false, reason: "prompt-injection" };
   }
-  if (FINANCIAL_INTENT.test(normalized) || FINANCIAL_PHRASE.test(normalized)) {
+  if (experienceScope === "personal_banking" && (OUTSIDE_PERSONAL_BANKING.test(request)
+    || (TRANSFER_REFERENCE.test(request) && (!TRANSFER_READ_ONLY.test(request) || TRANSFER_ACTION.test(request))))) {
+    return { allowed: false, reason: "product-scope" };
+  }
+  if (
+    FINANCIAL_INTENT.test(request)
+    || FINANCIAL_PHRASE.test(request)
+    || PERSONAL_BANKING_FOLLOW_UP.test(request)
+    || (normalized.includes("nueva solicitud del usuario:")
+      && FINANCIAL_INTENT.test(normalized.split("nueva solicitud del usuario:")[0] ?? "")
+      && UI_EDIT_FOLLOW_UP.test(request))
+    || (experienceScope === "full" && FULL_EXPERIENCE_FOLLOW_UP.test(request))
+  ) {
     return { allowed: true, category: "financial" };
   }
-  if (GREETING.test(normalized)) return { allowed: true, category: "greeting" };
-  if (CAPABILITIES.test(normalized)) return { allowed: true, category: "capabilities" };
+  if (GREETING.test(request)) return { allowed: true, category: "greeting" };
+  if (CAPABILITIES.test(request)) return { allowed: true, category: "capabilities" };
   return { allowed: false, reason: "out-of-scope" };
+}
+
+export function createMissingPeriodResponse(query: string): { answer: string; ui: UiDocument } | undefined {
+  const normalized = normalize(query);
+  if (normalized.includes("nueva solicitud del usuario:" )) return undefined;
+  if (!TEMPORAL_FINANCIAL_REQUEST.test(normalized) || EXPLICIT_PERIOD.test(normalized)) return undefined;
+
+  const answer = normalized.includes("compar")
+    ? "Para comparar tus gastos necesito los dos periodos que deseas revisar, por ejemplo: julio y agosto de 2026."
+    : normalized.includes("movimiento") || normalized.includes("transacci")
+    ? "Para mostrar tus movimientos necesito un periodo, por ejemplo: agosto de 2026 o tus últimos 30 días."
+    : "Para indicarte ese gasto necesito el periodo que deseas consultar, por ejemplo: este mes, el mes pasado o un rango de fechas.";
+
+  return {
+    answer,
+    ui: {
+      version: "1.0",
+      root: {
+        id: "financial-period-request",
+        type: "alert",
+        severity: "info",
+        text: answer,
+      },
+    },
+  };
 }
 
 export function isFinancialResponseSafe(answer: string): boolean {
@@ -54,11 +105,16 @@ export function isFinancialResponseSafe(answer: string): boolean {
 
 export function createFinancialScopeResponse(
   reason: FinancialScopeBlockReason | "unsafe-response",
+  experienceScope: FinancialExperienceScope = "full",
 ): { answer: string; ui: UiDocument } {
   const answer = reason === "prompt-injection"
     ? "No puedo seguir instrucciones que intenten cambiar mis reglas, identidad o controles de seguridad. Puedo ayudarte con una consulta legítima de banca personal."
+    : reason === "product-scope"
+    ? "Esta experiencia se concentra en banca personal. Puedo ayudarte a consultar cuentas y movimientos, comparar periodos, entender cambios en tus gastos y revisar movimientos atípicos. Prueba con: «Compara mis gastos de julio y agosto» o «Muéstrame mis últimos movimientos»."
     : reason === "unsafe-response"
     ? "No fue posible producir una respuesta bancaria segura. Reformula tu consulta usando únicamente información de banca o finanzas personales."
+    : experienceScope === "personal_banking"
+    ? "Esta experiencia se concentra en banca personal. Puedo ayudarte con cuentas, saldos, movimientos, ingresos, gastos, comparaciones y movimientos atípicos. Prueba con: «Compara mis gastos de julio y agosto»."
     : "Solo puedo ayudar con banca y finanzas personales, como cuentas, saldos, transacciones, ingresos, gastos, ahorro y pagos.";
   return {
     answer,
@@ -67,7 +123,7 @@ export function createFinancialScopeResponse(
       root: {
         id: "financial-scope-notice",
         type: "alert",
-        severity: reason === "out-of-scope" ? "info" : "warning",
+        severity: reason === "out-of-scope" || reason === "product-scope" ? "info" : "warning",
         text: answer,
       },
     },
@@ -80,4 +136,8 @@ function normalize(value: string): string {
     .replace(/\p{M}/gu, "")
     .toLocaleLowerCase("es-MX")
     .trim();
+}
+
+function latestUserRequest(normalizedQuery: string): string {
+  return normalizedQuery.split("nueva solicitud del usuario:").at(-1)?.trim() || normalizedQuery;
 }
